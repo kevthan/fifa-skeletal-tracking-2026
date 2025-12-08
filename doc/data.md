@@ -3,7 +3,7 @@ We provide **camera** and **bounding box data** for both validation (val) and te
 
 ## Preprocessed Data Access
 
-You can download the `boxes`, `cameras` as well as the preprocessed `skel_2d` and `skel_3d` from [here](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026)
+You can download the `boxes`, `cameras` as well as the preprocessed `skel_2d` and `skel_3d` from [here](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026/tree/main)
 
 The video footage is owned by FIFA and requires an additional agreement for access. To request permission, please complete this form. After reviewing your application, we will send you a separate license agreement along with further access details.
 

@@ -1,6 +1,6 @@
 # FIFA Skeletal Tracking Starter Kit (2026)
 [🏠Homepage](https://inside.fifa.com/innovation/innovation-programme/skeletal-tracking-light) |
-[💻Data](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026) |
+[💻Data](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026/tree/main) |
 [📊Benchmark Validation Set](https://www.codabench.org/competitions/11681/) |
 [📊Benchmark Challenge Set](https://www.codabench.org/competitions/11682/) |
 [💬Discord (SoccerNet)](https://discord.com/invite/cPbqf2mAwF)
@@ -61,7 +61,7 @@ data/
 - **`skel_2d/`**: Contains estimated 2D skeletal keypoints (15 keypoints). 
 - **`skel_3d/`**: Contains estimated 3D skeletal keypoints (15 keypoints). 
 
-You can find details about the `cameras`, `bounding boxes`, and `images` in docs/data-format.md. For `skel_2d` and `skel_3d`, you can generate them automatically using the provided `preprocess.py` script. Alternatively, we have also uploaded preprocessed data [here](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026).
+You can find details about the `cameras`, `bounding boxes`, and `images` in docs/data-format.md. For `skel_2d` and `skel_3d`, you can generate them automatically using the provided `preprocess.py` script. Alternatively, we have also uploaded preprocessed data [here](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026/tree/main).
 
 ### 📺 Sample Visualization
 We have integrated basic visualization functions in the code, but you are also encourage to checkout the visualization script we provided in [WorldPose Dataset](https://github.com/eth-ait/WorldPoseDataset/tree/visualization)
