@@ -14,7 +14,7 @@ def load_sequences(sequences_file: Path | str) -> list[str]:
 
 def prepare_submission(output_dir: Path, split: str):
     data = np.load(output_dir / f"submission_full.npz")
-    sequences = load_sequences(output_dir / f"sequences_{split}.txt")
+    sequences = load_sequences(f"data/sequences_{split}.txt")
 
     submission = {}
     for k in sequences:
@@ -33,5 +33,5 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Predictions not found at {predictions_dir}")
 
     predictions = np.load(predictions_dir)
-    prepare_submission(predictions, output_dir, "val")
-    prepare_submission(predictions, output_dir, "test")
+    prepare_submission(output_dir, "val")
+    prepare_submission(output_dir, "test")
