@@ -1,5 +1,5 @@
 # FIFA Skeletal Tracking Starter Kit (2026)
-[🏠Homepage](https://inside.fifa.com/innovation/innovation-programme/skeletal-tracking-light) |
+[🏠Homepage](https://inside.fifa.com/innovation/innovation-programme/skeletal-tracking) |
 [💻Data](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026/tree/main) |
 [📊Benchmark Validation Set](https://www.codabench.org/competitions/11681/) |
 [📊Benchmark Challenge Set](https://www.codabench.org/competitions/11682/) |
