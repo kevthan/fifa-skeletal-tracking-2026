@@ -1,0 +1,22 @@
+[project]
+name = "fifa-skeletal-tracking-2026"
+version = "0.1.0"
+description = "Skeletal Tracking Engine 2026"
+authors = [
+    {name = "kevthan",email = "k.thandiackal@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "numpy (>=2.4.2,<3.0.0)",
+    "opencv-python (>=4.13.0.92,<5.0.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "scipy (>=1.17.0,<2.0.0)",
+    "torch (>=2.10.0,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
