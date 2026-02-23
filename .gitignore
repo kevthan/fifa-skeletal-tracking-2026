@@ -1,0 +1,7 @@
+.DS_Store
+data/cameras
+data/boxes
+data/skel_2d
+data/skel_3d
+data/videos
+data/.gitattributes
