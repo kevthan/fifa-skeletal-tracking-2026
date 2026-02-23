@@ -218,7 +218,7 @@ class CameraTracker:
             R: (3, 3) rotation matrix
             t: (3,) translation vector
         """
-        C = -R.T @ t
+        C = -R.T @ t  # camera center in world coordinates
         self.state = CameraState(frame_idx=frame_idx, K=K, k=k, R=R, C=C)
 
     def track(self, frame_idx: int, frame: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray) -> None:
@@ -271,28 +271,38 @@ class CameraTracker:
         return self.state
 
     def _project_pitch_points(self, K, k, R, t, img_size):
+        # cv2.Rodrigues() extracts axis–angle vector from a 3×3 rotation matrix
+        # project world coord pitch points onto image plane
         pts_2d, _ = cv2.projectPoints(self.pitch_points, cv2.Rodrigues(R)[0], t, K, k)
         pts_2d = pts_2d.reshape(-1, 2)
         H, W = img_size[:2]
+        # not all points of the pitch are visible in the current frame
+        # those that are, are "valid"
         valid = (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < W) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < H)
         return pts_2d, valid
     
     def _prepare_field_mask(self, frame: np.ndarray, dilation_size: int = 20):
+        # project world coord pitch points onto image plane
         pts_2d_prev, valid = self._project_pitch_points(
             self.state.K, self.state.k, self.state.R, self.state.t, frame.shape[:2]
         )
+        # create a convex hull around the valid projected pitch points (imagine a rubber band around them)
         hull = cv2.convexHull(pts_2d_prev[valid].astype(np.int32))
         mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
         cv2.drawContours(mask, [hull], -1, 255, thickness=cv2.FILLED)
         kernel = np.ones((dilation_size, dilation_size), np.uint8)
         mask = cv2.dilate(mask, kernel)
 
+        # get the mean and std of the HSV values of the pixels in the mask
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mean, std = cv2.meanStdDev(hsv_frame, mask=mask)
         m = mean.flatten()
         s = std.flatten()
 
         # assume gaussian distribution
+        # set the lower and upper bounds to be mean +/- 2 std for hue
+        #  +/- 2.5 std for saturation, and +/- 3 std for value
+        # (value can be more affected by lighting changes)
         min_h = m[0] - 2.0 * s[0]
         max_h = m[0] + 2.0 * s[0]
         min_s = m[1] - 2.5 * s[1]
