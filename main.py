@@ -27,6 +27,7 @@ def intersection_over_plane(o, d):
     returns:
         intersection: (3,) intersection point
     """
+    # ray is p(t) = o + t * d with scalar param t
     # solve the x and y where z = 0
     t = -o[2] / d[2]
     return o + t * d
@@ -153,7 +154,7 @@ def minimize_reprojection_error(pts_3d, pts_2d, R, C, K, k, iterations=10):
     return t.detach()
 
 
-def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes):
+def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device="cpu"):
     """wrapper function to fine-tune the translation of the 3D predictions to minimize reprojection error"""
     NUM_PERSONS = predictions.shape[0]
     mid_hip_3d = predictions[..., [7, 8], :].mean(axis=-2, keepdims=False)
@@ -171,12 +172,12 @@ def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes):
     }
     valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)
     traj_3d = minimize_reprojection_error(
-        pts_3d=torch.tensor(mid_hip_3d[valid], dtype=torch.float32).to("cuda"),
-        pts_2d=torch.tensor(mid_hip_2d[valid], dtype=torch.float32).to("cuda"),
-        R=torch.tensor(camera_params["R"][valid], dtype=torch.float32).to("cuda"),
-        C=torch.tensor(camera_params["C"][valid], dtype=torch.float32).to("cuda"),
-        K=torch.tensor(camera_params["K"][valid], dtype=torch.float32).to("cuda"),
-        k=torch.tensor(camera_params["k"][valid], dtype=torch.float32).to("cuda"),
+        pts_3d=torch.tensor(mid_hip_3d[valid], dtype=torch.float32, device=device),
+        pts_2d=torch.tensor(mid_hip_2d[valid], dtype=torch.float32, device=device),
+        R=torch.tensor(camera_params["R"][valid], dtype=torch.float32, device=device),
+        C=torch.tensor(camera_params["C"][valid], dtype=torch.float32, device=device),
+        K=torch.tensor(camera_params["K"][valid], dtype=torch.float32, device=device),
+        k=torch.tensor(camera_params["k"][valid], dtype=torch.float32, device=device),
     )
     return traj_3d, valid
 
@@ -198,6 +199,16 @@ def process_sequence(
     predictions = np.zeros((NUM_PERSONS, NUM_FRAMES, 15, 3))
     predictions.fill(np.nan)
     pitch_points = np.loadtxt("data/pitch_points.txt")
+
+    if torch.cuda.is_available():
+        print("Using GPU")
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        print("Using Apple Silicon")
+        device = "mps"
+    else:
+        print("Using CPU")
+        device = "cpu"
 
     video = cv2.VideoCapture(video_path)
     camera_tracker = CameraTracker(
@@ -231,8 +242,9 @@ def process_sequence(
         Rt.append((state.R.copy(), state.t.copy()))
 
         for person in range(NUM_PERSONS):
-            # decide which foot is in contact with the ground by checking which has lower y
+            # decide which foot is in contact with the ground by checking which has highest y (lowest in image)
             box = boxes[frame_idx, person]
+            # skip if person not visible
             if np.isnan(box).any():
                 continue
 
@@ -248,7 +260,10 @@ def process_sequence(
 
             # convert from camera space to world space
             skel_3d = skels_3d[frame_idx, person]
+            # same as (R.T @ skel_3d.T).T = (inv(R) @ skel_3d.T).T since R is a orthogonal matrix
+            # inverse R to convert from camera space to world space
             skel_3d = skel_3d @ R
+            # center skeleton to lowest foot point, then translate that to the intersection point
             skel_3d = skel_3d - skel_3d[IDX] + intersection
             predictions[person, frame_idx] = skel_3d
 
@@ -311,6 +326,7 @@ def main(
         if export_camera:
             camera_path = camera_dir / f"{sequence}.npz"
             np.savez(camera_path, **camera)
+        break # only run one sequence for debugging
 
     if not output.parent.exists():
         output.parent.mkdir(parents=True, exist_ok=True)
