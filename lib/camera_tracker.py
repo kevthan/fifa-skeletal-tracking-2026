@@ -114,8 +114,8 @@ def optical_flow_pyrlk(prev_frame, frame, pts_old):
     errs = np.linalg.norm(pts_next - pts_old, axis=-1)
     median = np.median(errs[status])
     d = np.abs(errs[status] - median)
-    mad = np.median(d).clip(min=1e-6)
-    modified_z_scores = 0.6745 * d / mad
+    mad = np.median(d).clip(min=1e-6)  # MAD = median absolute deviation
+    modified_z_scores = 0.6745 * d / mad  # scale MAD to be comparable to std for normal distribution
     status[status] = modified_z_scores <= 3.5
     return pts_next, status
 
@@ -235,7 +235,10 @@ class CameraTracker:
         if refine_mask:
             mask = extract_lane_lines_mask(frame)
             field_mask = self._create_field_mask(frame)
+            # mask mainly contains pitch lines, but also parts of players & audience, and noise
             mask = cv2.bitwise_and(mask, field_mask)
+            # dist_map = each pixel is distance to nearest foreground (= ideally pitch line) pixel
+            # each fg pixel gets label idx of closest connected component (part of pitch lines)
             dist_map, labels, label2yx = self._make_dist_map(mask)
         else:
             labels = None
@@ -270,9 +273,9 @@ class CameraTracker:
         self.frame_buffer.append(frame)
         return self.state
 
-    def _project_pitch_points(self, K, k, R, t, img_size):
+    def _project_pitch_points_to_image_plane(self, K, k, R, t, img_size):
         # cv2.Rodrigues() extracts axis–angle vector from a 3×3 rotation matrix
-        # project world coord pitch points onto image plane
+        # project world coord pitch points onto image plane, including distortion
         pts_2d, _ = cv2.projectPoints(self.pitch_points, cv2.Rodrigues(R)[0], t, K, k)
         pts_2d = pts_2d.reshape(-1, 2)
         H, W = img_size[:2]
@@ -283,7 +286,7 @@ class CameraTracker:
     
     def _prepare_field_mask(self, frame: np.ndarray, dilation_size: int = 20):
         # project world coord pitch points onto image plane
-        pts_2d_prev, valid = self._project_pitch_points(
+        pts_2d_prev, valid = self._project_pitch_points_to_image_plane(
             self.state.K, self.state.k, self.state.R, self.state.t, frame.shape[:2]
         )
         # create a convex hull around the valid projected pitch points (imagine a rubber band around them)
@@ -314,8 +317,8 @@ class CameraTracker:
 
     def _create_field_mask(self, frame: np.ndarray):
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)
-        # we want to fill the holes in the mask
+        mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)  # parts of audience may still be included
+        # we want to fill the holes in the mask (not perfect)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((20, 20), np.uint8))
         return mask
 
@@ -332,11 +335,13 @@ class CameraTracker:
         """
         Update camera state from optical flow.
         """
-        pts_2d_prev, valid = self._project_pitch_points(
+        # project to image plane including distortion
+        pts_2d_prev, valid = self._project_pitch_points_to_image_plane(
             state_prev.K, state_prev.k, state_prev.R, state_prev.t, frame.shape[:2]
         )
 
         # snap the points to the nearest mask point
+        # consider only those inside the camera view (valid)
         pts_2d_prev = pts_2d_prev[valid]
         pts_2d_prev_int = pts_2d_prev.astype(np.int32)
         if dist_labels is not None and label2yx is not None or dist_map is not None:
@@ -350,13 +355,17 @@ class CameraTracker:
 
         self.debug_vis.draw_optical_flow(pts_2d_prev, pts_2d_next, status)
 
-        # estimate the rotation from the optical flow
+        # undistort and normalize the points
         pts_2d_prev_normalized = self._prep_points(pts_2d_prev[status], state_prev.K, state_prev.k)
         pts_2d_next_normalized = self._prep_points(pts_2d_next[status], state_curr.K, state_curr.k)
 
+        # estimate the rotation from the optical flow
+        # using the SVD solution to Wahba's problem: https://en.wikipedia.org/wiki/Wahba%27s_problem
         M = pts_2d_next_normalized.T @ pts_2d_prev_normalized
         U, S, Vt = np.linalg.svd(M)
         R_rel = U @ np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+
+        # chain relative rotation to camera's previous rotation => absolute rotation
         R = R_rel @ state_prev.R
 
         # update the state
@@ -392,6 +401,7 @@ class CameraTracker:
     # ========================================================================
     @staticmethod
     def _prep_points(pts, K, dist):
+        """Undistort and normalize 2D points."""
         if dist is not None:
             dist = np.asarray(dist, dtype=np.float32).ravel()
             if dist.size == 2:  # k1,k2 only -> expand
@@ -524,7 +534,7 @@ class CameraTracker:
     @staticmethod
     def _make_dist_map(mask: np.ndarray) -> np.ndarray:
         """Create distance transform from binary mask."""
-        mask_inv = (1 - (mask > 0)).astype(np.uint8)
+        mask_inv = (1 - (mask > 0)).astype(np.uint8)  # pitch lines are background, rest foreground
         dist, labels = cv2.distanceTransformWithLabels(
             mask_inv, cv2.DIST_L2, maskSize=11, labelType=cv2.DIST_LABEL_PIXEL
         )
