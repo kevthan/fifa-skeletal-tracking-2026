@@ -62,7 +62,7 @@ def ray_from_xy(xy, K, R, t, k1=0.0, k2=0.0):
     # Compute the distortion factor.
     factor = 1 + k1 * r2 + k2 * (r2**2)
 
-    # Correct the distorted normalized coordinates.
+    # Undistort the normalized coordinates
     x_undist = x_d / factor
     y_undist = y_d / factor
 
@@ -100,7 +100,11 @@ def project_points_th(obj_pts, R, C, K, k):
 
     # Compute radial distortion
     r2 = (img_pts**2).sum(dim=-1, keepdim=True)
-    r2 = torch.clamp(r2, 0, 0.5 / min(max(torch.abs(k).max().item(), 1.0), 1.0))
+
+    # clamp to avoid, e.g., too large or negative k1/k2 causing nonsensical distortions
+    r2 = torch.clamp(r2, 0, 0.5)
+
+    # polynomial distortion model: x_distorted = x * (1 + k1*r^2 + k2*r^4)
     p = torch.arange(1, k.shape[-1] + 1, device=k.device)
     img_pts = img_pts * (torch.ones_like(r2) + (k * r2.pow(p)).sum(-1, keepdim=True))
 
@@ -113,7 +117,7 @@ def project_points_th(obj_pts, R, C, K, k):
 
 def minimize_reprojection_error(pts_3d, pts_2d, R, C, K, k, iterations=10):
     """
-    Optimize 3D points to minimize reprojection error.
+    Optimize 3D points to minimize error when reprojecting them back to 2D.
 
     args:
         pts_3d: (N, 3)  - Initial 3D points (learnable)
@@ -145,6 +149,7 @@ def minimize_reprojection_error(pts_3d, pts_2d, R, C, K, k, iterations=10):
         loss.backward()
         return loss
 
+    # iteratively update translation to minimize error between 2D points and reprojected 3D points
     optimizer = optim.LBFGS([t], line_search_fn="strong_wolfe")
     for _ in range(iterations):
         optimizer.step(closure)
@@ -157,20 +162,28 @@ def minimize_reprojection_error(pts_3d, pts_2d, R, C, K, k, iterations=10):
 def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device="cpu"):
     """wrapper function to fine-tune the translation of the 3D predictions to minimize reprojection error"""
     NUM_PERSONS = predictions.shape[0]
+
+    # average of left and right hip keypoints = mid-hip keypoint
     mid_hip_3d = predictions[..., [7, 8], :].mean(axis=-2, keepdims=False)
     mid_hip_2d = skels_2d[..., [7, 8], :].mean(axis=-2, keepdims=False).transpose(1, 0, 2)
 
+    # from rotation matrices and translations, get all camera centers in world coordinates
     R = np.array([k[0] for k in Rt])
     t = np.array([k[1] for k in Rt])
     C = (-t[:, None] @ R).squeeze(1)
 
+    # replicate camera parameters for each person
     camera_params = {
         "K": cameras["K"][None].repeat(NUM_PERSONS, axis=0),
         "R": R[None].repeat(NUM_PERSONS, axis=0),
         "C": C[None].repeat(NUM_PERSONS, axis=0),
         "k": cameras["k"][None, ..., :2].repeat(NUM_PERSONS, axis=0),
     }
-    valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)
+
+    # for each person, know which frames are valid based on whether the bounding box is NaN or not
+    valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)  # (NUM_PERSONS, NUM_FRAMES)
+
+    # iteratively update translation to minimize error between 2D points and reprojected 3D points
     traj_3d = minimize_reprojection_error(
         pts_3d=torch.tensor(mid_hip_3d[valid], dtype=torch.float32, device=device),
         pts_2d=torch.tensor(mid_hip_2d[valid], dtype=torch.float32, device=device),
@@ -231,6 +244,8 @@ def process_sequence(
             print(f"Failed to read frame {frame_idx} from {video_path}")
             break
 
+        # track current camera pose (rotation and translation) based on pitch lines 
+        # and previously estimated camera pose
         state = camera_tracker.track(
             frame_idx=frame_idx,
             frame=img,
@@ -242,7 +257,6 @@ def process_sequence(
         Rt.append((state.R.copy(), state.t.copy()))
 
         for person in range(NUM_PERSONS):
-            # decide which foot is in contact with the ground by checking which has highest y (lowest in image)
             box = boxes[frame_idx, person]
             # skip if person not visible
             if np.isnan(box).any():
@@ -250,19 +264,38 @@ def process_sequence(
 
             skel_2d = skels_2d[frame_idx, person]
 
+            # assumption: lowest point = foot in contact with the ground
+            # decide which joint (foot) is in contact with the ground by checking which has 
+            # largest y (= lowest in image)
             IDX = np.argmax(skel_2d[:, 1])
             x, y = skel_2d[IDX]
             K = cameras["K"][frame_idx]
             k = cameras["k"][frame_idx]
             R, t = Rt[-1]
+            
+            # compute ray from camera center through image point where foot is supposedly touching the ground 
+            # get origin and normalized direction of the ray in world coordinates
             o, d = ray_from_xy((x, y), K, R, t, k[0], k[1])
+
+            # intersect ray with the ground plane (z=0) to get the 3D location of the foot in world coordinates
             intersection = intersection_over_plane(o, d)
 
-            # convert from camera space to world space
+            # convert 3D detections from camera space to world space
+            # Q: Do we have to undistort the 3D skeletons?
+            # A: Radial distortion is a bending of the picture produced by the lens.
+            # If you’re working with image pixels, you must correct for it to know which 
+            # direction in space they correspond to.
+            # But once you’ve moved off the 2‑D picture plane – either by undistorting and 
+            # back‑projecting the pixel, or because your detector already gives you 3‑D coordinates – 
+            # the bending effect has no further influence. 
+            # You’re then just dealing with straight rays and rigid transforms, so you can 
+            # safely “ignore” distortion from that point onwards.
             skel_3d = skels_3d[frame_idx, person]
-            # same as (R.T @ skel_3d.T).T = (inv(R) @ skel_3d.T).T since R is a orthogonal matrix
+
+            # skel_3d @ R = (R.T @ skel_3d.T).T = (inv(R) @ skel_3d.T).T since R is an orthogonal matrix
             # inverse R to convert from camera space to world space
             skel_3d = skel_3d @ R
+
             # center skeleton to lowest foot point, then translate that to the intersection point
             skel_3d = skel_3d - skel_3d[IDX] + intersection
             predictions[person, frame_idx] = skel_3d
@@ -270,10 +303,12 @@ def process_sequence(
     # fine-tune the translation to minimize reprojection error
     traj_3d, valid = fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes)
     predictions[valid] = predictions[valid] + traj_3d.cpu().numpy()[:, None, :]
+
+    # smoothen the person trajectories based on mid hip keypoint to reduce jitter
     for person in range(NUM_PERSONS):
         predictions[person] = smoothen(predictions[person])
     
-    # update the camera parameters
+    # update the camera parameters for downstream evaluation, export etc.
     cameras["R"] = np.array([k[0] for k in Rt], dtype=np.float32)
     cameras["t"] = np.array([k[1] for k in Rt], dtype=np.float32)
     return predictions.astype(np.float32)
@@ -326,7 +361,6 @@ def main(
         if export_camera:
             camera_path = camera_dir / f"{sequence}.npz"
             np.savez(camera_path, **camera)
-        break # only run one sequence for debugging
 
     if not output.parent.exists():
         output.parent.mkdir(parents=True, exist_ok=True)

@@ -13,9 +13,13 @@ def interpolate_with_gap(data: np.ndarray, max_gap: int = 3) -> np.ndarray:
     def _gap_aware_fill(series):
         is_nan = series.isna()
         groups = is_nan.ne(is_nan.shift()).cumsum()
+        # map each NaN to the size of its gap, and non-NaNs get a gap size of 0
         gap_sizes = groups.map(groups.value_counts())
+        # perform linear interpolation for all NaNs
         interp_series = series.interpolate(method='linear', limit_direction='both')
+        # build mask for NaNs that are part of gaps larger than max_gap
         mask_bad_gaps = is_nan & (gap_sizes > max_gap)
+        # set those to NaN again
         interp_series[mask_bad_gaps] = np.nan
         return interp_series
     df_clean = df.apply(_gap_aware_fill, axis=0)
@@ -31,6 +35,7 @@ def smoothen_traj(traj: np.ndarray, window_size: int = 11, sigma: float = 2.0) -
         window_size: Size of the window (should be odd).
         sigma: Spread of the gaussian curve.
     """
+    # interpolate small gaps before smoothing to avoid NaNs affecting the rolling mean
     traj_filled = interpolate_with_gap(traj, max_gap=3)
     df = pd.DataFrame(traj_filled)
     smoothed = df.rolling(
@@ -44,6 +49,9 @@ def smoothen_traj(traj: np.ndarray, window_size: int = 11, sigma: float = 2.0) -
 
 def smoothen(skels_3d: np.ndarray, window_size: int = 11, sigma: float = 2.0) -> np.ndarray:
     """Smoothens the entire skeleton structure. """
+    # average of left and right hip keypoints = mid-hip keypoint
     mid_hip = skels_3d[..., [7, 8], :].mean(axis=-2, keepdims=False)
     mid_hip_filtered = smoothen_traj(mid_hip, window_size=window_size, sigma=sigma)
+    # shift the entire skeleton so that the mid-hip follows the smoothened trajectory
+    # but relative positions of all joints remain unchanged
     return skels_3d - mid_hip[..., None, :] + mid_hip_filtered[..., None, :]
