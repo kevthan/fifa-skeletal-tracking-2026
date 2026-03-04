@@ -1,9 +1,9 @@
-from dataclasses import dataclass, field
 from collections import deque
-import numpy as np
+from dataclasses import dataclass, field
+
 import cv2
+import numpy as np
 import scipy.optimize
-from typing import Tuple, Optional
 
 
 class Debugger:
@@ -11,7 +11,7 @@ class Debugger:
     Centralized visualization manager for debugging camera tracking.
     """
 
-    def __init__(self, debug_stages: Tuple[str, ...] = ("projection",)):
+    def __init__(self, debug_stages: tuple[str, ...] = ("projection",)):
         """
         Args:
             enabled: Master switch for all visualizations
@@ -105,7 +105,7 @@ def optical_flow_pyrlk(prev_frame, frame, pts_old):
         cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),
         pts_old.reshape(-1, 1, 2).astype(np.float32),
         None,
-        **lk_params
+        **lk_params,
     )
     pts_next = pts_next.reshape(-1, 2)
     status = status.ravel().astype(bool)
@@ -115,7 +115,9 @@ def optical_flow_pyrlk(prev_frame, frame, pts_old):
     median = np.median(errs[status])
     d = np.abs(errs[status] - median)
     mad = np.median(d).clip(min=1e-6)  # MAD = median absolute deviation
-    modified_z_scores = 0.6745 * d / mad  # scale MAD to be comparable to std for normal distribution
+    modified_z_scores = (
+        0.6745 * d / mad
+    )  # scale MAD to be comparable to std for normal distribution
     status[status] = modified_z_scores <= 3.5
     return pts_next, status
 
@@ -131,6 +133,7 @@ class CameraState:
         R: Rotation matrix (3, 3)
         C: Camera center in world coordinates (3,)
     """
+
     frame_idx: int
     K: np.ndarray = field(default_factory=lambda: np.eye(3))
     k: np.ndarray = field(default_factory=lambda: np.zeros(5))
@@ -150,7 +153,7 @@ class CameraState:
     def t(self) -> np.ndarray:
         return -self.R @ self.C
 
-    def get_ypr(self, deg: bool = True) -> Tuple[float, float, float]:
+    def get_ypr(self, deg: bool = True) -> tuple[float, float, float]:
         yaw, pitch, roll = CameraTracker.rotation_matrix_to_euler(self.R)
         if deg:
             return np.rad2deg(yaw), np.rad2deg(pitch), np.rad2deg(roll)
@@ -168,8 +171,12 @@ def extract_lane_lines_mask(image):
     image_hls = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
     lightness = image_hls[:, :, 1]
 
-    mask_thin = cv2.adaptiveThreshold(lightness, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, -10)
-    mask_thick = cv2.adaptiveThreshold(lightness, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, -10)
+    mask_thin = cv2.adaptiveThreshold(
+        lightness, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, -10
+    )
+    mask_thick = cv2.adaptiveThreshold(
+        lightness, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, -10
+    )
     mask = cv2.bitwise_or(mask_thin, mask_thick)
 
     # suppress very dark pixels using grayscale
@@ -181,7 +188,7 @@ def extract_lane_lines_mask(image):
 @dataclass
 class CameraTrackerOptions:
     refine_interval: int = 10
-    debug_stages: Tuple[str, ...] = ("projection",)
+    debug_stages: tuple[str, ...] = ("projection",)
 
 
 class CameraTracker:
@@ -219,7 +226,9 @@ class CameraTracker:
         self.refine_interval = options.refine_interval
         self.debug_vis = Debugger(debug_stages=options.debug_stages)
 
-    def initialize(self, frame_idx: int, K: np.ndarray, k: np.ndarray, R: np.ndarray, t: np.ndarray) -> None:
+    def initialize(
+        self, frame_idx: int, K: np.ndarray, k: np.ndarray, R: np.ndarray, t: np.ndarray
+    ) -> None:
         """
         Initialize tracker from rotation matrix and translation vector.
 
@@ -230,7 +239,9 @@ class CameraTracker:
         C = -R.T @ t  # camera center in world coordinates
         self.state = CameraState(frame_idx=frame_idx, K=K, k=k, R=R, C=C)
 
-    def track(self, frame_idx: int, frame: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray) -> None:
+    def track(
+        self, frame_idx: int, frame: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray
+    ) -> None:
         # update the state
         self.state.frame_idx = frame_idx
         self.state.K = K
@@ -276,7 +287,9 @@ class CameraTracker:
             )
 
         if self.debug_vis.visualize:
-            self.debug_vis.draw_projection(self.pitch_points, self.state.R, self.state.t, self.state.K, self.state.k)
+            self.debug_vis.draw_projection(
+                self.pitch_points, self.state.R, self.state.t, self.state.K, self.state.k
+            )
             cv2.imshow("Visualization", self.debug_vis.frame_curr)
             key = cv2.waitKey(1)
             if key == ord("q"):
@@ -296,7 +309,7 @@ class CameraTracker:
         # those that are, are "valid"
         valid = (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < W) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < H)
         return pts_2d, valid
-    
+
     def _prepare_field_mask(self, frame: np.ndarray, dilation_size: int = 20):
         # project world coord pitch points onto image plane
         pts_2d_prev, valid = self._project_pitch_points_to_image_plane(
@@ -323,14 +336,16 @@ class CameraTracker:
         max_h = m[0] + 2.0 * s[0]
         min_s = m[1] - 2.5 * s[1]
         max_s = m[1] + 2.5 * s[1]
-        min_v = m[2] - 3.0 * s[2] 
+        min_v = m[2] - 3.0 * s[2]
         max_v = m[2] + 3.0 * s[2]
         self.lower_bound = np.array([min_h, min_s, min_v])
         self.upper_bound = np.array([max_h, max_s, max_v])
 
     def _create_field_mask(self, frame: np.ndarray):
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)  # parts of audience may still be included
+        mask = cv2.inRange(
+            hsv_frame, self.lower_bound, self.upper_bound
+        )  # parts of audience may still be included
         # we want to fill the holes in the mask (not perfect)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((20, 20), np.uint8))
         return mask
@@ -426,7 +441,7 @@ class CameraTracker:
         return pts_n
 
     @staticmethod
-    def rotation_matrix_to_euler(R: np.ndarray) -> Tuple[float, float, float]:
+    def rotation_matrix_to_euler(R: np.ndarray) -> tuple[float, float, float]:
         """
         Convert rotation matrix to yaw/pitch/roll using custom camera convention.
 
@@ -489,7 +504,7 @@ class CameraTracker:
         K: np.ndarray,
         R_init: np.ndarray,
         C: np.ndarray,
-        dist_coeffs: Optional[np.ndarray] = None,
+        dist_coeffs: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Refine rotation matrix by minimizing distance to visual features.
