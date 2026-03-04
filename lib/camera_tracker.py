@@ -122,6 +122,15 @@ def optical_flow_pyrlk(prev_frame, frame, pts_old):
 
 @dataclass
 class CameraState:
+    """Represents the camera state at a given frame.
+
+    Attributes:
+        frame_idx: Index of the current frame
+        K: Camera intrinsic matrix (3, 3)
+        k: Distortion coefficients (5,)
+        R: Rotation matrix (3, 3)
+        C: Camera center in world coordinates (3,)
+    """
     frame_idx: int
     K: np.ndarray = field(default_factory=lambda: np.eye(3))
     k: np.ndarray = field(default_factory=lambda: np.zeros(5))
@@ -233,6 +242,7 @@ class CameraTracker:
 
         refine_mask = frame_idx > 0 and frame_idx % self.refine_interval == 0
         if refine_mask:
+            # TODO: IDEA: use a segmentation model to get a cleaner mask of the pitch lines
             mask = extract_lane_lines_mask(frame)
             field_mask = self._create_field_mask(frame)
             # mask mainly contains pitch lines, but also parts of players & audience, and noise
@@ -245,6 +255,8 @@ class CameraTracker:
             label2yx = None
 
         if frame_idx > 0:
+            # use optical flow to get a first rough estimate of the camera rotation change
+            # then update rotation matrix in self.state
             self._update_flow(
                 frame=frame,
                 prev_frame=self.frame_buffer[-1],
@@ -257,6 +269,7 @@ class CameraTracker:
 
         if refine_mask:
             self.debug_vis.draw_mask(mask)
+            # refine the previous rough estimate of rotation
             self._update_mask_refine(
                 dist_map=dist_map,
                 state_curr=self.state,
@@ -380,7 +393,6 @@ class CameraTracker:
         Refine camera rotation by aligning projected 3D points with visual features.
 
         Args:
-            timestamp: float, timestamp of the frame
             dist_map: (H, W) distance transform of visual features (e.g., lane lines)
             state_curr: Current camera state
         """
@@ -482,15 +494,24 @@ class CameraTracker:
         """
         Refine rotation matrix by minimizing distance to visual features.
         This is a refactored version of your original refine_camera_rotation() function.
+
+        Args:
+            dist_map: (H, W) distance transform of visual features (e.g., pitch lines)
+            pts_3d: (N, 3) 3D points in world coordinates (e.g., pitch points)
+            K: (3, 3) camera intrinsic matrix
+            R_init: (3, 3) initial rotation matrix (e.g., from optical flow)
+            C: (3,) camera center in world coordinates
+            dist_coeffs: (5,) distortion coefficients
         """
         if dist_coeffs is None:
             dist_coeffs = np.zeros(5, dtype=np.float32)
         H, W = dist_map.shape[:2]
 
-        # Define objective function
+        # update delta of rotation to optimize for objctive
         def objective_function(delta):
             R = (delta + r_init).reshape(3, 3)
             R = self.find_closest_orthogonal_matrix(R)
+            # get translation vector from camera center and rotation
             t = -R @ C
 
             pts_2d, _ = cv2.projectPoints(pts_3d, cv2.Rodrigues(R)[0], t, K, dist_coeffs)
@@ -504,7 +525,10 @@ class CameraTracker:
             xs_valid = xs[valid_mask]
             ys_valid = ys[valid_mask]
 
+            # objective: update rotation to minimize the mean distance of the projected
+            # pitch points to nearest pitch points coming from the previously computed distance map
             if len(xs_valid) == 0:
+                # if no projected points are on the image, return a large distance
                 distances = np.sqrt(H**2 + W**2)
             else:
                 distances = dist_map[ys_valid, xs_valid]
