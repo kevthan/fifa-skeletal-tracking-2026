@@ -1,7 +1,8 @@
-from pathlib import Path
-import zipfile
-import numpy as np
 import os
+import zipfile
+from pathlib import Path
+
+import numpy as np
 
 
 def load_sequences(sequences_file: Path | str) -> list[str]:
@@ -13,7 +14,7 @@ def load_sequences(sequences_file: Path | str) -> list[str]:
 
 
 def prepare_submission(output_dir: Path, split: str):
-    data = np.load(output_dir / f"submission_full.npz")
+    data = np.load(output_dir / "submission_full.npz")
     sequences = load_sequences(f"data/sequences_{split}.txt")
 
     submission = {}

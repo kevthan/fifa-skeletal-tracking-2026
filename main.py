@@ -6,14 +6,15 @@ Date: Nov 10, 2025
 """
 
 from pathlib import Path
-import numpy as np
+
 import cv2
+import numpy as np
 import torch
 import torch.optim as optim
 from tqdm import tqdm
+
 from lib.camera_tracker import CameraTracker, CameraTrackerOptions
 from lib.postprocess import smoothen
-
 
 OPENPOSE_TO_OURS = [0, 2, 5, 3, 6, 4, 7, 9, 12, 10, 13, 11, 14, 22, 19]
 
@@ -244,7 +245,7 @@ def process_sequence(
             print(f"Failed to read frame {frame_idx} from {video_path}")
             break
 
-        # track current camera pose (rotation and translation) based on pitch lines 
+        # track current camera pose (rotation and translation) based on pitch lines
         # and previously estimated camera pose
         state = camera_tracker.track(
             frame_idx=frame_idx,
@@ -265,15 +266,15 @@ def process_sequence(
             skel_2d = skels_2d[frame_idx, person]
 
             # assumption: lowest point = foot in contact with the ground
-            # decide which joint (foot) is in contact with the ground by checking which has 
+            # decide which joint (foot) is in contact with the ground by checking which has
             # largest y (= lowest in image)
             IDX = np.argmax(skel_2d[:, 1])
             x, y = skel_2d[IDX]
             K = cameras["K"][frame_idx]
             k = cameras["k"][frame_idx]
             R, t = Rt[-1]
-            
-            # compute ray from camera center through image point where foot is supposedly touching the ground 
+
+            # compute ray from camera center through image point where foot is supposedly touching the ground
             # get origin and normalized direction of the ray in world coordinates
             o, d = ray_from_xy((x, y), K, R, t, k[0], k[1])
 
@@ -283,12 +284,12 @@ def process_sequence(
             # convert 3D detections from camera space to world space
             # Q: Do we have to undistort the 3D skeletons?
             # A: Radial distortion is a bending of the picture produced by the lens.
-            # If you’re working with image pixels, you must correct for it to know which 
+            # If you’re working with image pixels, you must correct for it to know which
             # direction in space they correspond to.
-            # But once you’ve moved off the 2‑D picture plane – either by undistorting and 
-            # back‑projecting the pixel, or because your detector already gives you 3‑D coordinates – 
-            # the bending effect has no further influence. 
-            # You’re then just dealing with straight rays and rigid transforms, so you can 
+            # But once you’ve moved off the 2‑D picture plane – either by undistorting and
+            # back‑projecting the pixel, or because your detector already gives you 3‑D coordinates –
+            # the bending effect has no further influence.
+            # You’re then just dealing with straight rays and rigid transforms, so you can
             # safely “ignore” distortion from that point onwards.
             skel_3d = skels_3d[frame_idx, person]
 
@@ -307,7 +308,7 @@ def process_sequence(
     # smoothen the person trajectories based on mid hip keypoint to reduce jitter
     for person in range(NUM_PERSONS):
         predictions[person] = smoothen(predictions[person])
-    
+
     # update the camera parameters for downstream evaluation, export etc.
     cameras["R"] = np.array([k[0] for k in Rt], dtype=np.float32)
     cameras["t"] = np.array([k[1] for k in Rt], dtype=np.float32)
@@ -372,14 +373,28 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--sequences", "-s", type=str, default="data/sequences_full.txt", help="Path to the sequences file"
+        "--sequences",
+        "-s",
+        type=str,
+        default="data/sequences_full.txt",
+        help="Path to the sequences file",
     )
     parser.add_argument(
-        "--output", "-o", type=Path, default="output/submission_full.npz", help="Path to the output npz file"
+        "--output",
+        "-o",
+        type=Path,
+        default="output/submission_full.npz",
+        help="Path to the output npz file",
     )
-    parser.add_argument("--refine_interval", "-r", type=int, default=1, help="Interval to refine the camera pose")
-    parser.add_argument("--visualize", "-v", action="store_true", help="Visualize the tracking results")
-    parser.add_argument("--export_camera", "-c", action="store_true", help="Export the camera parameters")
+    parser.add_argument(
+        "--refine_interval", "-r", type=int, default=1, help="Interval to refine the camera pose"
+    )
+    parser.add_argument(
+        "--visualize", "-v", action="store_true", help="Visualize the tracking results"
+    )
+    parser.add_argument(
+        "--export_camera", "-c", action="store_true", help="Export the camera parameters"
+    )
     args = parser.parse_args()
 
     sequences = load_sequences(args.sequences)
