@@ -227,7 +227,7 @@ def process_sequence(
     video = cv2.VideoCapture(video_path)
     camera_tracker = CameraTracker(
         pitch_points=pitch_points,
-        fps=50.0,
+        fps=video.get(cv2.CAP_PROP_FPS),  # fps = 50
         options=tracker_options,
     )
     camera_tracker.initialize(
@@ -340,6 +340,12 @@ def main(
     root = Path("data/")
     solutions = {}
     for sequence in sequences:
+        seq_output_fp = output.parent / f"{sequence}.npz"
+        if seq_output_fp.exists():
+            print(f"Skipping {sequence} since output already exists at {seq_output_fp}")
+            solutions[sequence] = np.load(seq_output_fp)[sequence]
+            continue
+
         camera = dict(np.load(root / "cameras" / f"{sequence}.npz"))
         skel2d = np.load(root / "skel_2d" / f"{sequence}.npy")
         skel3d = np.load(root / "skel_3d" / f"{sequence}.npy")
@@ -362,6 +368,9 @@ def main(
         if export_camera:
             camera_path = camera_dir / f"{sequence}.npz"
             np.savez(camera_path, **camera)
+
+        # save each sequence's predictions separately for easier debugging and visualization
+        np.savez_compressed(seq_output_fp, **{sequence: solutions[sequence]})
 
     if not output.parent.exists():
         output.parent.mkdir(parents=True, exist_ok=True)

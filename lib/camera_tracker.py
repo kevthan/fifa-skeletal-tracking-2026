@@ -264,6 +264,7 @@ class CameraTracker:
         else:
             labels = None
             label2yx = None
+            dist_map = None
 
         if frame_idx > 0:
             # use optical flow to get a first rough estimate of the camera rotation change
