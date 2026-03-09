@@ -1,3 +1,4 @@
+import argparse
 import os
 import zipfile
 from pathlib import Path
@@ -14,7 +15,7 @@ def load_sequences(sequences_file: Path | str) -> list[str]:
 
 
 def prepare_submission(output_dir: Path, split: str):
-    data = np.load(output_dir / "submission_full.npz")
+    data = np.load(output_dir / f"submission_{split}.npz")
     sequences = load_sequences(f"data/sequences_{split}.txt")
 
     submission = {}
@@ -28,11 +29,29 @@ def prepare_submission(output_dir: Path, split: str):
 
 
 if __name__ == "__main__":
-    output_dir = Path("outputs/")
-    predictions_dir = output_dir / "submission_full.npz"
+    parser = argparse.ArgumentParser(description="Prepare submission zip file.")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("outputs/"),
+        help="Directory where the predictions are stored and where the submission zip will be saved.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="full",
+        choices=["val", "test", "full"],
+        help="Which split to prepare the submission for.",
+    )
+    args = parser.parse_args()
+
+    output_dir = args.output_dir
+    predictions_dir = output_dir / f"submission_{args.split}.npz"
     if not predictions_dir.exists():
         raise FileNotFoundError(f"Predictions not found at {predictions_dir}")
 
     predictions = np.load(predictions_dir)
-    prepare_submission(output_dir, "val")
-    prepare_submission(output_dir, "test")
+    if args.split == "val" or args.split == "full":
+        prepare_submission(output_dir, "val")
+    if args.split == "test" or args.split == "full":
+        prepare_submission(output_dir, "test")
