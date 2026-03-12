@@ -44,7 +44,7 @@ class Debugger:
             pt2 = tuple(pts_next[i].astype(int))
             cv2.circle(vis, pt1, 5, (0, 0, 255), -1)  # Red: previous
             cv2.circle(vis, pt2, 5, (0, 255, 0), -1)  # Green: current
-            cv2.line(vis, pt1, pt2, (0, 255, 255), 1)  # Yellow: flow vector
+            cv2.line(vis, pt1, pt2, (255, 0, 0), 2)  # Blue: flow vector
 
     def draw_mask(self, mask: np.ndarray) -> None:
         """Visualize 3D points projected onto mask."""
@@ -64,6 +64,7 @@ class Debugger:
         t: np.ndarray,
         K: np.ndarray,
         dist_coeffs: np.ndarray,
+        color: tuple[int, int, int] = (0, 255, 255),
     ) -> None:
         """Visualize 3D points projected onto current frame."""
         if "projection" not in self.stages:
@@ -77,9 +78,71 @@ class Debugger:
             if not valid:
                 continue
             center = pt.astype(int)
-            bl = (center - np.array([2, 2])).clip(min=0, max=max_size)
-            tr = (center + np.array([2, 2])).clip(min=0, max=max_size)
-            cv2.rectangle(vis, tuple(bl), tuple(tr), (0, 255, 255), -1)
+            bl = (center - np.array([1, 1])).clip(min=0, max=max_size)
+            tr = (center + np.array([1, 1])).clip(min=0, max=max_size)
+            cv2.rectangle(vis, tuple(bl), tuple(tr), color, -1)  # yellow dots
+
+    def draw_3d_points(
+        self,
+        pts_3d: np.ndarray,
+        R: np.ndarray | None = None,
+        t: np.ndarray | None = None,
+        K: np.ndarray | None = None,
+        dist_coeffs: np.ndarray | None = None,
+        color: tuple[int, int, int] = (0, 255, 0),
+        point_radius: int = 2,
+        connectivity: np.ndarray | None = None,
+        line_color: tuple[int, int, int] | None = None,
+        line_thickness: int = 1,
+    ) -> None:
+        """
+        Visualize 3D points by drawing their x-y projection onto the frame.
+
+        Args:
+            pts_3d: (N, 3) 3D points
+            R: (3, 3) rotation matrix from world to camera coordinates
+            t: (3,) translation vector from world to camera coordinates
+            K: (3, 3) intrinsic matrix
+            dist_coeffs: (5,) distortion coefficients
+            color: RGB tuple for point color (default green)
+            point_radius: radius of drawn circles for each point
+            connectivity: (M, 2) optional array of point indices defining skeleton connections
+            line_color: RGB tuple for skeleton line color (default same as point color)
+            line_thickness: thickness of skeleton lines
+        """
+        if "projection" not in self.stages:
+            return
+
+        vis = self.frame_curr
+        H, W = vis.shape[:2]
+
+        if line_color is None:
+            line_color = color
+
+        # extract x-y coordinates
+        if R is not None and t is not None and K is not None and dist_coeffs is not None:
+            pts_2d, _ = cv2.projectPoints(pts_3d, cv2.Rodrigues(R)[0], t, K, dist_coeffs)
+            pts_2d = pts_2d.reshape(-1, 2).astype(int)
+        else:
+            # if no camera parameters provided, assume pts_3d are already in camera space
+            # ignore z and just take x-y as 2D points to visualize
+            pts_2d = pts_3d[:, :2].astype(int)
+
+        # Draw skeleton connectivity lines first
+        if connectivity is not None:
+            for idx1, idx2 in connectivity:
+                if idx1 >= len(pts_2d) or idx2 >= len(pts_2d):
+                    continue
+                pt1 = pts_2d[idx1]
+                pt2 = pts_2d[idx2]
+
+                if 0 <= pt1[0] < W and 0 <= pt1[1] < H and 0 <= pt2[0] < W and 0 <= pt2[1] < H:
+                    cv2.line(vis, tuple(pt1), tuple(pt2), line_color, line_thickness)
+
+        # Draw points as circles
+        for pt in pts_2d:
+            if 0 <= pt[0] < W and 0 <= pt[1] < H:
+                cv2.circle(vis, tuple(pt), point_radius, color, -1)
 
 
 def optical_flow_pyrlk(prev_frame, frame, pts_old):
@@ -253,7 +316,6 @@ class CameraTracker:
 
         refine_mask = frame_idx > 0 and frame_idx % self.refine_interval == 0
         if refine_mask:
-            # TODO: IDEA: use a segmentation model to get a cleaner mask of the pitch lines
             mask = extract_lane_lines_mask(frame)
             field_mask = self._create_field_mask(frame)
             # mask mainly contains pitch lines, but also parts of players & audience, and noise

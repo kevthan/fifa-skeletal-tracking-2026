@@ -18,6 +18,26 @@ from lib.postprocess import smoothen
 
 OPENPOSE_TO_OURS = [0, 2, 5, 3, 6, 4, 7, 9, 12, 10, 13, 11, 14, 22, 19]
 
+# Connectivity array for the 15-point skeleton subset
+# Each pair [i, j] defines a connection between points i and j in the subset
+SKELETON_CONNECTIVITY = [
+    [0, 1],  # Nose to RShoulder
+    [0, 2],  # Nose to LShoulder
+    [1, 3],  # RShoulder to RElbow
+    [3, 5],  # RElbow to RWrist
+    [2, 4],  # LShoulder to LElbow
+    [4, 6],  # LElbow to LWrist
+    [1, 7],  # RShoulder to RHip
+    [2, 8],  # LShoulder to LHip
+    [7, 8],  # RHip to LHip
+    [7, 9],  # RHip to RKnee
+    [9, 11],  # RKnee to RAnkle
+    [11, 13],  # RAnkle to RBigToe
+    [8, 10],  # LHip to LKnee
+    [10, 12],  # LKnee to LAnkle
+    [12, 14],  # LAnkle to LBigToe
+]
+
 
 def intersection_over_plane(o, d):
     """
@@ -203,6 +223,7 @@ def process_sequence(
     skels_2d: np.ndarray,
     video_path: Path | str,
     tracker_options: CameraTrackerOptions,
+    device: str = "cpu",
 ) -> np.ndarray:
     """a naive baseline that uses the bounding boxes to estimate the camera pose
     1. estimate the camera pose using the bounding boxes
@@ -213,16 +234,6 @@ def process_sequence(
     predictions = np.zeros((NUM_PERSONS, NUM_FRAMES, 15, 3))
     predictions.fill(np.nan)
     pitch_points = np.loadtxt("data/pitch_points.txt")
-
-    if torch.cuda.is_available():
-        print("Using GPU")
-        device = "cuda"
-    elif torch.backends.mps.is_available():
-        print("Using Apple Silicon")
-        device = "mps"
-    else:
-        print("Using CPU")
-        device = "cpu"
 
     video = cv2.VideoCapture(video_path)
     camera_tracker = CameraTracker(
@@ -257,6 +268,15 @@ def process_sequence(
         pbar.set_postfix_str(f"yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}")
         Rt.append((state.R.copy(), state.t.copy()))
 
+        # prepare lists to batch-draw visualizations
+        frame_skel_2d = []
+        frame_skel_3d = []
+
+        # camera parameters for this frame (constant across persons)
+        K = cameras["K"][frame_idx]
+        k = cameras["k"][frame_idx]
+        R, t = Rt[-1]
+
         for person in range(NUM_PERSONS):
             box = boxes[frame_idx, person]
             # skip if person not visible
@@ -270,9 +290,6 @@ def process_sequence(
             # largest y (= lowest in image)
             IDX = np.argmax(skel_2d[:, 1])
             x, y = skel_2d[IDX]
-            K = cameras["K"][frame_idx]
-            k = cameras["k"][frame_idx]
-            R, t = Rt[-1]
 
             # compute ray from camera center through image point where foot is supposedly touching the ground
             # get origin and normalized direction of the ray in world coordinates
@@ -301,8 +318,35 @@ def process_sequence(
             skel_3d = skel_3d - skel_3d[IDX] + intersection
             predictions[person, frame_idx] = skel_3d
 
+            # collect for later drawing
+            frame_skel_2d.append(skel_2d)
+            frame_skel_3d.append(skel_3d)
+
+        # after processing all persons, draw once if debugging enabled
+        if "projection" in tracker_options.debug_stages:
+            for skel2d, skel3d in zip(frame_skel_2d, frame_skel_3d):
+                camera_tracker.debug_vis.draw_3d_points(
+                    skel2d, color=(255, 0, 255), connectivity=SKELETON_CONNECTIVITY
+                )
+                camera_tracker.debug_vis.draw_3d_points(
+                    skel3d, R, t, K, k, color=(0, 255, 255), connectivity=SKELETON_CONNECTIVITY
+                )
+
+            paused = False
+            while True:
+                cv2.imshow("Visualization", camera_tracker.debug_vis.frame_curr)
+                key = cv2.waitKey(1 if not paused else 0)
+
+                if key == ord(" "):
+                    paused = not paused
+                    print("Paused" if paused else "Playing")
+                elif key == ord("q"):
+                    exit()
+                else:
+                    break
+
     # fine-tune the translation to minimize reprojection error
-    traj_3d, valid = fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes)
+    traj_3d, valid = fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device=device)
     predictions[valid] = predictions[valid] + traj_3d.cpu().numpy()[:, None, :]
 
     # smoothen the person trajectories based on mid hip keypoint to reduce jitter
@@ -330,12 +374,27 @@ def main(
     export_camera: bool,
     visualize: bool,
 ):
+
+    # create output directory if it doesn't exist
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
     debug_stages = ["projection", "flow", "mask"] if visualize else []
     if export_camera:
         camera_dir = Path("outputs/calibration/")
         camera_dir.mkdir(parents=True, exist_ok=True)
     else:
         camera_dir = None
+
+    if torch.cuda.is_available():
+        print("Using GPU")
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        print("Using Apple Silicon")
+        device = "mps"
+    else:
+        print("Using CPU")
+        device = "cpu"
 
     root = Path("data/")
     solutions = {}
@@ -363,6 +422,7 @@ def main(
                 refine_interval=np.clip(NUM_FRAMES // 500, a_min=1, a_max=max_refine_interval),
                 debug_stages=tuple(debug_stages),
             ),
+            device=device,
         )
 
         if export_camera:
