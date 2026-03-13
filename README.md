@@ -90,7 +90,7 @@ pip install aitviewer
 
 **Step 1**: Run the pipeline with camera export enabled:
 ```bash
-python main.py -s data/sequences_val.txt -o outputs/submission_full.npz -c
+python main.py -s data/sequences_full.txt -o outputs/submission_full.npz -c
 ```
 This saves per-frame calibrated cameras to `outputs/calibration/` and predictions to the output NPZ.
 
