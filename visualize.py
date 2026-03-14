@@ -1,15 +1,18 @@
-import numpy as np
-import cv2
 from pathlib import Path
+
+import cv2
+import numpy as np
 import tqdm
 
 # Importing necessary modules from aitviewer
 from aitviewer.configuration import CONFIG as C
+from aitviewer.headless import HeadlessRenderer
 from aitviewer.renderables.billboard import Billboard
 from aitviewer.renderables.skeletons import Skeletons
-from aitviewer.viewer import Viewer
-from aitviewer.headless import HeadlessRenderer
 from aitviewer.scene.camera import OpenCVCamera
+from aitviewer.viewer import Viewer
+
+C.window_type = "pyglet"
 
 
 def create_billboard(camera, img_folder, distance=200, draw_fn=None):
@@ -31,7 +34,9 @@ def convert_video_to_images(video_path, output_folder):
     output_folder.mkdir(exist_ok=True, parents=True)
     cap = cv2.VideoCapture(str(video_path))
     frame_id = 0
-    with tqdm.tqdm(total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), desc="Converting video to images:") as pbar:
+    with tqdm.tqdm(
+        total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), desc="Converting video to images:"
+    ) as pbar:
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -47,13 +52,41 @@ def convert_video_to_images(video_path, output_folder):
 class Skel15:
     OPENPOSE_TO_OURS = [0, 2, 5, 3, 6, 4, 7, 9, 12, 10, 13, 11, 14, 22, 19]
 
-    joint_names = ['Nose', 'RShoulder', 'LShoulder', 'RElbow', 'LElbow', 'RWrist', 'LWrist',
-                   'RHip', 'LHip', 'RKnee', 'LKnee', 'RAnkle', 'LAnkle', 'RBigToe', 'LBigToe']
+    joint_names = [
+        "Nose",
+        "RShoulder",
+        "LShoulder",
+        "RElbow",
+        "LElbow",
+        "RWrist",
+        "LWrist",
+        "RHip",
+        "LHip",
+        "RKnee",
+        "LKnee",
+        "RAnkle",
+        "LAnkle",
+        "RBigToe",
+        "LBigToe",
+    ]
 
     bones = np.array(
         [
-            [0, 1], [0, 2], [1, 2], [1, 3], [2, 4], [3, 5], [4, 6], [1, 7], [2, 8],
-            [7, 9], [8, 10], [9, 11], [10, 12], [11, 13], [12, 14]
+            [0, 1],
+            [0, 2],
+            [1, 2],
+            [1, 3],
+            [2, 4],
+            [3, 5],
+            [4, 6],
+            [1, 7],
+            [2, 8],
+            [7, 9],
+            [8, 10],
+            [9, 11],
+            [10, 12],
+            [11, 13],
+            [12, 14],
         ]
     )
 
@@ -75,7 +108,15 @@ def make_draw_func(camera, boxes):
             # drawing a rectangle around the box
             cv2.rectangle(img, (x1, y1), (x2, y2), colors[i].tolist(), 2)
             # also draw a label with the player id
-            cv2.putText(img, f"Player #{i:02d}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors[i].tolist(), 2)
+            cv2.putText(
+                img,
+                f"Player #{i:02d}",
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                colors[i].tolist(),
+                2,
+            )
         return img
 
     return _draw_func
@@ -126,12 +167,22 @@ def add_skeleton_renderables(viewer, predictions, num_frames):
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--sequence", type=str, default="ARG_FRA_183303")
-    parser.add_argument("--predictions", "-p", type=Path, default=Path("outputs/submission_full.npz"),
-                        help="Path to the output predictions NPZ file")
-    parser.add_argument("--calibration_dir", type=Path, default=Path("outputs/calibration/"),
-                        help="Directory containing calibrated camera NPZ files (from --export_camera)")
+    parser.add_argument(
+        "--predictions",
+        "-p",
+        type=Path,
+        default=Path("outputs/submission_full.npz"),
+        help="Path to the output predictions NPZ file",
+    )
+    parser.add_argument(
+        "--calibration_dir",
+        type=Path,
+        default=Path("outputs/calibration/"),
+        help="Directory containing calibrated camera NPZ files (from --export_camera)",
+    )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--output_path", type=Path, default=Path("outputs/result_vis"))
     args = parser.parse_args()
@@ -184,7 +235,9 @@ if __name__ == "__main__":
     camera_params["Rt"] = np.concatenate(
         [camera_params["R"], camera_params["t"][..., None]], axis=-1
     )
-    camera = OpenCVCamera(camera_params["K"], camera_params["Rt"], W, H, viewer=viewer, name="Overlay")
+    camera = OpenCVCamera(
+        camera_params["K"], camera_params["Rt"], W, H, viewer=viewer, name="Overlay"
+    )
     billboard = create_billboard(camera, img_folder, 200, make_draw_func(camera_params, boxes))
     viewer.scene.add(billboard)
     viewer.scene.add(camera)
@@ -208,6 +261,10 @@ if __name__ == "__main__":
     viewer.set_temp_camera(camera)
     if args.headless:
         args.output_path.mkdir(exist_ok=True, parents=True)
-        viewer.save_video(video_dir=str(args.output_path / f"{clip_name}.mp4"), output_fps=60, ensure_no_overwrite=False)
+        viewer.save_video(
+            video_dir=str(args.output_path / f"{clip_name}.mp4"),
+            output_fps=50,
+            ensure_no_overwrite=False,
+        )
     else:
         viewer.run()

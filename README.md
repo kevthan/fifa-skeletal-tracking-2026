@@ -19,7 +19,9 @@ This repository provides a **naïve baseline** for the **FIFA Skeletal Tracking 
 Make sure you have the required dependencies installed:
 
 ```bash
-pip install numpy torch opencv-python tqdm scipy
+conda env create -f environment.yaml
+conda activate skeletal-tracking-26
+poetry install --no-root
 ```
 
 ## 📂 Data Preparation
@@ -58,8 +60,8 @@ data/
 - **`images/`**: Stores frame images for each sequence. **Please Ensure that the filenames are sequentially numbered** (e.g., `"00000.jpg"`, `"00001.jpg"`, etc.). You can create the folder using opencv or FFMPEG after downloading the video files (you can also use this [script](video2image.py)
 - **`cameras/`**: Contains `.npz` files with camera parameters for each sequence.
 - **`boxes/`**: Stores bounding box data for each sequence.
-- **`skel_2d/`**: Contains estimated 2D skeletal keypoints (15 keypoints). 
-- **`skel_3d/`**: Contains estimated 3D skeletal keypoints (15 keypoints). 
+- **`skel_2d/`**: Contains estimated 2D skeletal keypoints (15 keypoints).
+- **`skel_3d/`**: Contains estimated 3D skeletal keypoints (15 keypoints).
 
 You can find details about the `cameras`, `bounding boxes`, and `images` in docs/data-format.md. For `skel_2d` and `skel_3d`, you can generate them automatically using the provided `preprocess.py` script. Alternatively, we have also uploaded preprocessed data [here](https://huggingface.co/datasets/tijiang13/FIFA-Skeletal-Tracking-Light-2026/tree/main).
 
@@ -96,15 +98,15 @@ This saves per-frame calibrated cameras to `outputs/calibration/` and prediction
 
 **Step 2**: Visualize a sequence:
 ```bash
-# Interactive viewer
-python visualize.py --sequence ARG_FRA_183303 -p outputs/submission_full.npz
+# Interactive viewer example
+python visualize.py --sequence ARG_CRO_225412 -p outputs/ARG_CRO_225412.npz --calibration_dir outputs/calibration/ --output_path outputs/result_vis
 
 # Headless rendering to video
-python visualize.py --sequence ARG_FRA_183303 -p outputs/submission_full.npz --headless
+python visualize.py --sequence ARG_CRO_225412 -p outputs/ARG_CRO_225412.npz --calibration_dir outputs/calibration/ --output_path outputs/result_vis --headless
 ```
 
 **CLI options**:
-- `--sequence` — sequence name to visualize (default: `ARG_FRA_183303`)
+- `--sequence` — sequence name to visualize (default: `ARG_CRO_225412`)
 - `--predictions` / `-p` — path to the output predictions NPZ file (default: `outputs/submission_full.npz`)
 - `--calibration_dir` — directory with calibrated camera files (default: `outputs/calibration/`)
 - `--headless` — render to video instead of opening the interactive viewer
