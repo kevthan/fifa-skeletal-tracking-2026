@@ -360,7 +360,7 @@ class CameraTracker:
 
         self.camera_states.append(self.state.copy())
         self.frame_buffer.append(frame)
-        return self.state
+        return self.state, dist_map
 
     def _project_pitch_points_to_image_plane(self, K, k, R, t, img_size):
         # cv2.Rodrigues() extracts axis–angle vector from a 3×3 rotation matrix

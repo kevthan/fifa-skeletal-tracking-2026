@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import scipy.optimize
 import torch
 import torch.optim as optim
 from tqdm import tqdm
@@ -37,6 +38,68 @@ SKELETON_CONNECTIVITY = [
     [10, 12],  # LKnee to LAnkle
     [12, 14],  # LAnkle to LBigToe
 ]
+
+
+def compute_reprojection_error(predictions, skels_2d, cameras, Rt, boxes, sequences_file=None):
+    """Compute reprojection error to diagnose if camera/pose is the bottleneck.
+
+    Args:
+        predictions: (NUM_PERSONS, NUM_FRAMES, 15, 3) predicted 3D skeletons
+        skels_2d: (NUM_FRAMES, NUM_PERSONS, 15, 2) 2D skeleton detections
+        cameras: dict with K, k for all frames
+        Rt: list of (R, t) tuples for all frames
+        boxes: (NUM_FRAMES, NUM_PERSONS, 4) bounding boxes (for validity check)
+        sequences_file: optional file path to report by sequence
+
+    Returns:
+        dict with reprojection statistics
+    """
+    NUM_PERSONS, NUM_FRAMES = predictions.shape[:2]
+
+    # Get camera parameters
+    R = np.array([k[0] for k in Rt])  # (NUM_FRAMES, 3, 3)
+    t = np.array([k[1] for k in Rt])  # (NUM_FRAMES, 3)
+
+    # Valid mask: frames where all persons have valid boxes
+    valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)  # (NUM_PERSONS, NUM_FRAMES)
+
+    reprojection_errors = []
+
+    for frame_idx in range(NUM_FRAMES):
+        for person in range(NUM_PERSONS):
+            if not valid[person, frame_idx]:
+                continue
+
+            skel_3d = predictions[person, frame_idx]  # (15, 3)
+            skel_2d_gt = skels_2d[frame_idx, person]  # (15, 2)
+
+            # Skip if any NaN in ground truth
+            if np.isnan(skel_2d_gt).any() or np.isnan(skel_3d).any():
+                continue
+
+            # Project 3D skeleton to 2D
+            pts_2d, _ = cv2.projectPoints(
+                skel_3d,
+                cv2.Rodrigues(R[frame_idx])[0],
+                t[frame_idx],
+                cameras["K"][frame_idx],
+                cameras["k"][frame_idx],
+            )
+            pts_2d = pts_2d.squeeze(axis=1)  # (15, 2)
+
+            # Compute L2 distance in pixels
+            errors = np.linalg.norm(pts_2d - skel_2d_gt, axis=1)  # (15,)
+            reprojection_errors.extend(errors)
+
+    reprojection_errors = np.array(reprojection_errors)
+
+    return {
+        "mean_reprojection_error": float(np.mean(reprojection_errors)),
+        "median_reprojection_error": float(np.median(reprojection_errors)),
+        "std_reprojection_error": float(np.std(reprojection_errors)),
+        "max_reprojection_error": float(np.max(reprojection_errors)),
+        "num_observations": len(reprojection_errors),
+    }
 
 
 def intersection_over_plane(o, d):
@@ -181,12 +244,16 @@ def minimize_reprojection_error(pts_3d, pts_2d, R, C, K, k, iterations=10):
 
 
 def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device="cpu"):
-    """wrapper function to fine-tune the translation of the 3D predictions to minimize reprojection error"""
+    """wrapper function to fine-tune the translation of the 3D predictions to minimize reprojection error
+
+    Uses all 15 joints to compute the reprojection error, providing richer signal for pose refinement.
+    Optimizes a single translation per (person, frame) pair across all joints.
+    """
     NUM_PERSONS = predictions.shape[0]
 
-    # average of left and right hip keypoints = mid-hip keypoint
-    mid_hip_3d = predictions[..., [7, 8], :].mean(axis=-2, keepdims=False)
-    mid_hip_2d = skels_2d[..., [7, 8], :].mean(axis=-2, keepdims=False).transpose(1, 0, 2)
+    # all 15 joints
+    all_joints_3d = predictions  # (NUM_PERSONS, NUM_FRAMES, 15, 3)
+    all_joints_2d = skels_2d.transpose(1, 0, 2, 3)  # transpose to (NUM_PERSONS, NUM_FRAMES, 15, 2)
 
     # from rotation matrices and translations, get all camera centers in world coordinates
     R = np.array([k[0] for k in Rt])
@@ -204,16 +271,174 @@ def fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device="cpu
     # for each person, know which frames are valid based on whether the bounding box is NaN or not
     valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)  # (NUM_PERSONS, NUM_FRAMES)
 
-    # iteratively update translation to minimize error between 2D points and reprojected 3D points
-    traj_3d = minimize_reprojection_error(
-        pts_3d=torch.tensor(mid_hip_3d[valid], dtype=torch.float32, device=device),
-        pts_2d=torch.tensor(mid_hip_2d[valid], dtype=torch.float32, device=device),
-        R=torch.tensor(camera_params["R"][valid], dtype=torch.float32, device=device),
-        C=torch.tensor(camera_params["C"][valid], dtype=torch.float32, device=device),
-        K=torch.tensor(camera_params["K"][valid], dtype=torch.float32, device=device),
-        k=torch.tensor(camera_params["k"][valid], dtype=torch.float32, device=device),
+    # Extract valid (person, frame) pairs for all 15 joints
+    # Shape: (num_valid, 15, 3) and (num_valid, 15, 2)
+    all_joints_3d_valid = all_joints_3d[valid]
+    all_joints_2d_valid = all_joints_2d[valid]
+
+    # Flatten joints into batch dimension: (num_valid * 15, 3) and (num_valid * 15, 2)
+    # This provides 15× richer gradient signal for pose refinement
+    pts_3d_flat = all_joints_3d_valid.reshape(-1, 3)
+    pts_2d_flat = all_joints_2d_valid.reshape(-1, 2)
+
+    # Replicate camera parameters for each of the 15 joints
+    R_valid = camera_params["R"][valid]  # (num_valid, 3, 3)
+    C_valid = camera_params["C"][valid]  # (num_valid, 3)
+    K_valid = camera_params["K"][valid]  # (num_valid, 3, 3)
+    k_valid = camera_params["k"][valid]  # (num_valid, 2)
+
+    R_repeat = np.repeat(R_valid, 15, axis=0)  # (num_valid * 15, 3, 3)
+    C_repeat = np.repeat(C_valid, 15, axis=0)  # (num_valid * 15, 3)
+    K_repeat = np.repeat(K_valid, 15, axis=0)  # (num_valid * 15, 3, 3)
+    k_repeat = np.repeat(k_valid, 15, axis=0)  # (num_valid * 15, 2)
+
+    # iteratively update translation to minimize error across all 15 joints
+    traj_3d_flat = minimize_reprojection_error(
+        pts_3d=torch.tensor(pts_3d_flat, dtype=torch.float32, device=device),
+        pts_2d=torch.tensor(pts_2d_flat, dtype=torch.float32, device=device),
+        R=torch.tensor(R_repeat, dtype=torch.float32, device=device),
+        C=torch.tensor(C_repeat, dtype=torch.float32, device=device),
+        K=torch.tensor(K_repeat, dtype=torch.float32, device=device),
+        k=torch.tensor(k_repeat, dtype=torch.float32, device=device),
     )
+
+    # Average translations across 15 joints to get one translation per (person, frame) pair
+    # traj_3d_flat shape: (num_valid * 15, 3)
+    # Reshape to (num_valid, 15, 3) and take mean along joint dimension
+    traj_3d = traj_3d_flat.reshape(-1, 15, 3).mean(dim=1)  # (num_valid, 3)
+
     return traj_3d, valid
+
+
+def bundle_adjustment_camera(
+    pts_3d, cameras, Rt, dist_maps, iterations=10, window_size=20, device="cpu"
+):
+    """Refine the camera parameters based on the lane line mask and distance map.
+
+    Adapted from CameraTracker._refine_rotation_with_mask to work across all frames
+    and optimize both rotation and translation parameters. Processes frames in sliding windows
+    to keep computation tractable while still optimizing all valid frames.
+
+    Args:
+        pts_3d: (M, 3) pitch points
+        cameras: dict with K, k for all frames
+        Rt: list of (R, t) tuples for all frames
+        dist_maps: list of distance maps (or None) for each frame
+        iterations: max iterations per window
+        window_size: number of frames per optimization window (default 100)
+        device: device to use
+    """
+    # N: number of frames, M: number of 3D points
+
+    # Get full camera parameters
+    R_full = np.array([k[0] for k in Rt])  # (N, 3, 3)
+    t_full = np.array([k[1] for k in Rt])  # (N, 3)
+
+    # Get valid frame indices (frames that have distance maps)
+    valid_frame_indices = np.array([i for i, d in enumerate(dist_maps) if d is not None])
+
+    if len(valid_frame_indices) == 0:
+        # No valid distance maps, return original parameters
+        return [(r_ref, t_ref) for r_ref, t_ref in zip(R_full, t_full, strict=True)]
+
+    # Process valid frames in windows
+    R_optimized = R_full.copy()
+    t_optimized = t_full.copy()
+
+    for window_start in tqdm(
+        range(0, len(valid_frame_indices), window_size), desc="Bundle Adjustment"
+    ):
+        window_end = min(window_start + window_size, len(valid_frame_indices))
+        window_valid_indices = valid_frame_indices[window_start:window_end]
+
+        # Get camera params and distance maps for this window
+        R_window = R_full[window_valid_indices].copy()  # (W, 3, 3)
+        t_window = t_full[window_valid_indices].copy()  # (W, 3)
+        dmaps_window = np.array([dist_maps[i] for i in window_valid_indices])  # (W, H, W_pix)
+
+        # Flatten parameters for optimization
+        r_flat = R_window.reshape(-1, 9)  # (W, 9)
+        params_init = np.concatenate([r_flat, t_window], axis=1).flatten()  # (W * 12,)
+
+        def objective_function(params):
+            # Reshape parameters back
+            params_reshaped = params.reshape(-1, 12)  # (W, 12)
+            R_params = params_reshaped[:, :9].reshape(-1, 3, 3)  # (W, 3, 3)
+            t_params = params_reshaped[:, 9:]  # (W, 3)
+
+            residuals = []
+
+            for i, frame_idx in enumerate(window_valid_indices):
+                R = R_params[i]
+                t = t_params[i]
+                dmap = dmaps_window[i]
+                H, W_pix = dmap.shape
+
+                # Enforce rotation matrix orthogonality
+                try:
+                    R = CameraTracker.find_closest_orthogonal_matrix(R)
+                except np.linalg.LinAlgError:
+                    # SVD failed, skip orthogonality enforcement for this frame
+                    pass
+
+                # Project 3D points
+                pts_2d, _ = cv2.projectPoints(
+                    pts_3d, cv2.Rodrigues(R)[0], t, cameras["K"][frame_idx], cameras["k"][frame_idx]
+                )
+                pts_2d = pts_2d.squeeze(axis=1)
+
+                # Round to pixel coordinates, handling NaN/inf gracefully
+                xs = np.full(len(pts_2d), -1, dtype=np.int32)
+                ys = np.full(len(pts_2d), -1, dtype=np.int32)
+                valid_proj = np.isfinite(pts_2d[:, 0]) & np.isfinite(pts_2d[:, 1])
+                xs[valid_proj] = np.round(pts_2d[valid_proj, 0]).astype(np.int32)
+                ys[valid_proj] = np.round(pts_2d[valid_proj, 1]).astype(np.int32)
+
+                valid_mask = (xs >= 0) & (xs < W_pix) & (ys >= 0) & (ys < H)
+                if np.any(valid_mask):
+                    xs_valid = xs[valid_mask]
+                    ys_valid = ys[valid_mask]
+                    frame_loss = dmap[ys_valid, xs_valid].mean()
+                else:
+                    # If no visible points, penalize lightly
+                    frame_loss = np.sqrt(H**2 + W_pix**2)
+
+                residuals.append(frame_loss)
+
+            return np.array(residuals)
+
+        # Set up bounds
+        bounds = []
+        for _ in range(len(window_valid_indices)):
+            bounds.extend([(-1.0, 1.0)] * 9)  # Rotation perturbation
+            bounds.extend([(-5.0, 5.0), (-5.0, 5.0), (-1.0, 1.0)])  # Translation perturbation
+
+        params_delta = np.zeros_like(params_init)
+
+        # Optimize this window
+        result = scipy.optimize.least_squares(
+            lambda delta: objective_function(params_init + delta),
+            params_delta,
+            method="dogbox",  # More robust for ill-conditioned problems
+            bounds=([b[0] for b in bounds], [b[1] for b in bounds]),
+            max_nfev=iterations * 50,  # Reduce to avoid numerical issues
+        )
+
+        # Extract optimized parameters for this window
+        params_opt = params_init + result.x
+        params_reshaped = params_opt.reshape(-1, 12)
+        R_opt = params_reshaped[:, :9].reshape(-1, 3, 3)
+        t_opt = params_reshaped[:, 9:]
+
+        # Enforce final orthogonality
+        for i in range(R_opt.shape[0]):
+            R_opt[i] = CameraTracker.find_closest_orthogonal_matrix(R_opt[i])
+
+        # Store optimized parameters back into full arrays
+        R_optimized[window_valid_indices] = R_opt
+        t_optimized[window_valid_indices] = t_opt
+
+    return [(r_ref, t_ref) for r_ref, t_ref in zip(R_optimized, t_optimized, strict=True)]
 
 
 def process_sequence(
@@ -250,6 +475,8 @@ def process_sequence(
     )
 
     Rt = []
+    dist_maps = []
+
     for frame_idx in (pbar := tqdm(range(NUM_FRAMES), desc=f"{video_path.stem}")):
         success, img = video.read()
         if not success:
@@ -258,12 +485,18 @@ def process_sequence(
 
         # track current camera pose (rotation and translation) based on pitch lines
         # and previously estimated camera pose
-        state = camera_tracker.track(
+        state, dist_map = camera_tracker.track(
             frame_idx=frame_idx,
             frame=img,
             K=cameras["K"][frame_idx],
             dist_coeffs=cameras["k"][frame_idx],
         )
+
+        # if dist_map is None, copy the previous one
+        if dist_map is None and len(dist_maps) > 0:
+            dist_map = dist_maps[-1]
+        dist_maps.append(dist_map)
+
         yaw, pitch, roll = state.get_ypr()
         pbar.set_postfix_str(f"yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}")
         Rt.append((state.R.copy(), state.t.copy()))
@@ -345,6 +578,14 @@ def process_sequence(
                 else:
                     break
 
+    # optional: bundle adjustmend for camera parameters based on lane line distance maps
+    # Rt = bundle_adjustment_camera(
+    #     pts_3d=pitch_points,
+    #     Rt=Rt,
+    #     cameras={k: v[: len(Rt)] for k, v in cameras.items()},
+    #     dist_maps=dist_maps,
+    # )
+
     # fine-tune the translation to minimize reprojection error
     traj_3d, valid = fine_tune_translation(predictions, skels_2d, cameras, Rt, boxes, device=device)
     predictions[valid] = predictions[valid] + traj_3d.cpu().numpy()[:, None, :]
@@ -381,7 +622,7 @@ def main(
 
     debug_stages = ["projection", "flow", "mask"] if visualize else []
     if export_camera:
-        camera_dir = Path("outputs/calibration/")
+        camera_dir = output.parent / "calibration"
         camera_dir.mkdir(parents=True, exist_ok=True)
     else:
         camera_dir = None
@@ -431,6 +672,17 @@ def main(
 
         # save each sequence's predictions separately for easier debugging and visualization
         np.savez_compressed(seq_output_fp, **{sequence: solutions[sequence]})
+
+        # Compute reprojection error diagnostics
+        Rt_list = [(camera["R"][i], camera["t"][i]) for i in range(len(camera["R"]))]
+        reproj_stats = compute_reprojection_error(
+            solutions[sequence], skel2d[:, :, OPENPOSE_TO_OURS], camera, Rt_list, boxes
+        )
+        print(
+            f"  Reprojection stats: mean={reproj_stats['mean_reprojection_error']:.2f}px, "
+            f"median={reproj_stats['median_reprojection_error']:.2f}px, "
+            f"std={reproj_stats['std_reprojection_error']:.2f}px"
+        )
 
     if not output.parent.exists():
         output.parent.mkdir(parents=True, exist_ok=True)

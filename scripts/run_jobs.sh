@@ -8,8 +8,10 @@ fi
 
 SPLIT=$1
 
+OUTPUT_DIR="out_040326_ft_translation_avg_15joints"
+
 # create predictions in .npz format
-python main.py -s data/sequences_${SPLIT}.txt -o outputs/submission_${SPLIT}.npz -c
+python main.py -s data/sequences_${SPLIT}.txt -o ${OUTPUT_DIR}/submission_${SPLIT}.npz -c
 
 # prepare the submission zip file
-python prepare_submission.py --split $SPLIT
+python prepare_submission.py --split $SPLIT --output-dir ${OUTPUT_DIR}
