@@ -117,38 +117,80 @@ def intersection_over_plane(o, d):
     return o + t * d
 
 
-def ray_from_xy(xy, K, R, t, k1=0.0, k2=0.0):
+def estimate_depth_from_height(skel_2d, K, nose_to_ankle_m=1.65):
+    """Estimate the camera-space depth of a person using a nose-to-ankle height prior.
+
+    Uses chained segment lengths (ankle→knee→hip→shoulder→nose) rather than the
+    straight-line distance, which is more robust when the person is leaning.
+
+    The pinhole model gives:  pixel_height = focal * real_height / depth
+    Rearranging:              depth = focal * real_height / pixel_height
+
+    This depth is a property of the whole person (not one specific joint), valid
+    when the camera distance >> body height so all joints share roughly the same depth.
+
+    Args:
+        skel_2d:         (15, 2) 2D keypoint detections in pixel coordinates.
+        K:               (3, 3) camera intrinsic matrix (K[0,0]=fx, K[1,1]=fy).
+        nose_to_ankle_m: Expected real-world nose-to-ankle height in metres (default 1.65).
+
+    Returns:
+        float target depth in camera space (z along optical axis), or None if key
+        joints are missing or the measured pixel height is degenerate.
+    """
+    # Joint indices (after OPENPOSE_TO_OURS): 0=Nose, 1=RShoulder, 2=LShoulder,
+    # 7=RHip, 8=LHip, 9=RKnee, 10=LKnee, 11=RAnkle, 12=LAnkle
+    right_chain = [11, 9, 7, 1, 0]  # RAnkle → RKnee → RHip → RShoulder → Nose
+    left_chain = [12, 10, 8, 2, 0]  # LAnkle → LKnee → LHip → LShoulder → Nose
+
+    def chain_pixel_length(chain):
+        pts = skel_2d[chain]
+        if np.isnan(pts).any():
+            return None
+        return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+
+    right_len = chain_pixel_length(right_chain)
+    left_len = chain_pixel_length(left_chain)
+
+    if right_len is None and left_len is None:
+        return None
+
+    valid_lengths = [l for l in [right_len, left_len] if l is not None]
+    pixel_height = float(np.mean(valid_lengths))
+
+    if pixel_height <= 1e-3:
+        return None
+
+    focal_length = float((K[0, 0] + K[1, 1]) / 2.0)
+    return focal_length * nose_to_ankle_m / pixel_height
+
+
+def ray_from_xy(xy, K, R, t, dist_coeffs=None):
     """
     Compute the ray from the camera center through the image point (x, y),
-    correcting for radial distortion using coefficients k1 and k2.
+    correcting for lens distortion using cv2.undistortPoints.
+
+    cv2.undistortPoints iteratively solves the inverse distortion problem, which
+    is more accurate than the closed-form approximation — especially near image
+    edges where distortion is large and the approximation breaks down.
 
     Args:
         xy: (2,) array_like containing pixel coordinates [x, y] in the image.
         K: (3, 3) ndarray representing the camera intrinsic matrix.
         R: (3, 3) ndarray representing the camera rotation matrix.
         t: (3,) ndarray representing the camera translation vector.
-        k1: float, the first radial distortion coefficient (default 0).
-        k2: float, the second radial distortion coefficient (default 0).
+        dist_coeffs: (N,) distortion coefficients passed to cv2.undistortPoints
+                     (k1, k2, p1, p2[, k3[, k4, k5, k6]]). None means no distortion.
 
     Returns:
         origin: (3,) ndarray representing the camera center in world coordinates.
         direction: (3,) unit ndarray representing the direction of the ray in world coordinates.
     """
-    # Convert the pixel coordinate to homogeneous coordinates.
-    p = np.array([xy[0], xy[1], 1.0])
-
-    # Compute the normalized coordinate (distorted) in the camera coordinate system.
-    p_norm = np.linalg.inv(K) @ p  # p_norm = [x_d, y_d, 1]
-    x_d, y_d = p_norm[0], p_norm[1]
-
-    # Compute the radial distance (squared) in the normalized plane.
-    r2 = x_d**2 + y_d**2
-    # Compute the distortion factor.
-    factor = 1 + k1 * r2 + k2 * (r2**2)
-
-    # Undistort the normalized coordinates
-    x_undist = x_d / factor
-    y_undist = y_d / factor
+    # cv2.undistortPoints expects shape (1, 1, 2) and returns normalised coords
+    # (i.e. with K removed and distortion corrected), so P=None, R=None.
+    pts = np.array([[[float(xy[0]), float(xy[1])]]], dtype=np.float64)
+    undist = cv2.undistortPoints(pts, K, dist_coeffs)  # (1, 1, 2) normalised
+    x_undist, y_undist = float(undist[0, 0, 0]), float(undist[0, 0, 1])
 
     # Construct the undistorted direction in camera coordinates (z = 1).
     d_cam = np.array([x_undist, y_undist, 1.0])
@@ -510,6 +552,9 @@ def process_sequence(
         k = cameras["k"][frame_idx]
         R, t = Rt[-1]
 
+        # camera center in world coordinates given by -R^T t
+        camera_center = -R.T @ t
+
         for person in range(NUM_PERSONS):
             box = boxes[frame_idx, person]
             # skip if person not visible
@@ -526,7 +571,7 @@ def process_sequence(
 
             # compute ray from camera center through image point where foot is supposedly touching the ground
             # get origin and normalized direction of the ray in world coordinates
-            o, d = ray_from_xy((x, y), K, R, t, k[0], k[1])
+            o, d = ray_from_xy((x, y), K, R, t, k)
 
             # intersect ray with the ground plane (z=0) to get the 3D location of the foot in world coordinates
             intersection = intersection_over_plane(o, d)
@@ -545,10 +590,36 @@ def process_sequence(
 
             # skel_3d @ R = (R.T @ skel_3d.T).T = (inv(R) @ skel_3d.T).T since R is an orthogonal matrix
             # inverse R to convert from camera space to world space
-            skel_3d = skel_3d @ R
+            raw_skel_world = skel_3d @ R + camera_center
 
-            # center skeleton to lowest foot point, then translate that to the intersection point
-            skel_3d = skel_3d - skel_3d[IDX] + intersection
+            foot_pos = intersection
+
+            # # Estimate the foot's target depth from the height prior, then walk along the
+            # # IDX ray until that camera-space depth is reached.
+            # # Both `intersection` and `ray_until_depth` lie on the same ray (o, d), so
+            # # their average is also on that ray. Any point on the ray projects back to
+            # # the same pixel (x, y), so reprojection of IDX is preserved regardless of
+            # # which point we pick. World XY and Z both change along the ray.
+            # target_depth = estimate_depth_from_height(skel_2d, K)
+
+            # # how much to trust the height-based depth prior vs the plane intersection
+            # lambda_prior = 0.2
+
+            # if target_depth is not None and target_depth > 0:
+            #     # Camera-space z of (o + s*d) = R[2]@o + s*(R[2]@d) + t[2].
+            #     # Since o = -R.T@t, R[2]@o + t[2] = 0, so s = target_depth / (R[2]@d).
+            #     axis_component = float(R[2] @ d)
+            #     if abs(axis_component) > 1e-6:
+            #         s = target_depth / axis_component
+            #         ray_until_depth = o + s * d
+            #         foot_pos = (1 - lambda_prior) * intersection + lambda_prior * ray_until_depth
+            #     else:
+            #         foot_pos = intersection
+            # else:
+            #     foot_pos = intersection
+
+            skel_3d = raw_skel_world - raw_skel_world[IDX] + foot_pos
+
             predictions[person, frame_idx] = skel_3d
 
             # collect for later drawing
