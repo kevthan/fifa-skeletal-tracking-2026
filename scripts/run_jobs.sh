@@ -8,10 +8,15 @@ fi
 
 SPLIT=$1
 
-OUTPUT_DIR="out_040326_ft_translation_avg_15joints"
+SUBMISSION_NAME="041226_no_ft_translation_no_smoothen"
+OUTPUT_DIR="/Users/kevin/Projects/fifa-challenge-2026/experiments/${SUBMISSION_NAME}/"
+PRED_PATH="${OUTPUT_DIR}/${SUBMISSION_NAME}_${SPLIT}.npz"
 
 # create predictions in .npz format
-python main.py -s data/sequences_${SPLIT}.txt -o ${OUTPUT_DIR}/submission_${SPLIT}.npz -c
+python main.py -s data/sequences_${SPLIT}.txt -o ${PRED_PATH} -c
 
 # prepare the submission zip file
-python prepare_submission.py --split $SPLIT --output-dir ${OUTPUT_DIR}
+python prepare_submission.py \
+--predictions-path ${PRED_PATH} \
+--output-dir ${OUTPUT_DIR} \
+--split $SPLIT

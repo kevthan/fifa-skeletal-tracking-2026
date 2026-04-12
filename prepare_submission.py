@@ -14,22 +14,28 @@ def load_sequences(sequences_file: Path | str) -> list[str]:
     return sequences
 
 
-def prepare_submission(output_dir: Path, split: str):
-    data = np.load(output_dir / f"submission_{split}.npz")
+def prepare_submission(output_dir: Path, pred_path: Path, split: str):
+    data = np.load(pred_path)
     sequences = load_sequences(f"data/sequences_{split}.txt")
 
     submission = {}
     for k in sequences:
         submission[k] = data[k].astype(np.float32)
 
-    with zipfile.ZipFile(output_dir / f"submission_{split}.zip", "w") as zipf:
-        np.savez_compressed(output_dir / f"submission_{split}.npz", **submission)
-        zipf.write(output_dir / f"submission_{split}.npz", arcname="submission.npz")
-        os.remove(output_dir / f"submission_{split}.npz")
+    submission_name = pred_path.stem
+    with zipfile.ZipFile(output_dir / f"{submission_name}.zip", "w") as zipf:
+        np.savez_compressed(output_dir / f"{submission_name}.npz", **submission)
+        zipf.write(output_dir / f"{submission_name}.npz", arcname="submission.npz")
+        os.remove(output_dir / f"{submission_name}.npz")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare submission zip file.")
+    parser.add_argument(
+        "--predictions-path",
+        type=Path,
+        help="Path to the .npz file containing the predictions.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -46,12 +52,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     output_dir = args.output_dir
-    predictions_dir = output_dir / f"submission_{args.split}.npz"
-    if not predictions_dir.exists():
-        raise FileNotFoundError(f"Predictions not found at {predictions_dir}")
+    pred_path = args.predictions_path
+    if not pred_path.exists():
+        raise FileNotFoundError(f"Predictions not found at {pred_path}")
 
-    predictions = np.load(predictions_dir)
+    predictions = np.load(pred_path)
     if args.split == "val" or args.split == "full":
-        prepare_submission(output_dir, "val")
+        prepare_submission(output_dir, pred_path, "val")
     if args.split == "test" or args.split == "full":
-        prepare_submission(output_dir, "test")
+        prepare_submission(output_dir, pred_path, "test")
