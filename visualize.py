@@ -15,6 +15,50 @@ from aitviewer.viewer import Viewer
 C.window_type = "pyglet"
 
 
+def project_points(points_3d, camera, frame_id):
+    frame_id = min(frame_id, len(camera["K"]) - 1)
+    dist_coeffs = camera.get("k")
+    if dist_coeffs is None:
+        dist_coeffs = np.zeros(5, dtype=np.float32)
+    else:
+        dist_coeffs = dist_coeffs[frame_id]
+
+    points_2d, _ = cv2.projectPoints(
+        points_3d,
+        cv2.Rodrigues(camera["R"][frame_id])[0],
+        camera["t"][frame_id],
+        camera["K"][frame_id],
+        dist_coeffs,
+    )
+    return points_2d.reshape(-1, 2)
+
+
+def draw_pitch_points(img, camera, pitch_points, current_frame_id):
+    height, width = img.shape[:2]
+    projected_points = project_points(pitch_points, camera, current_frame_id)
+
+    margin = 100
+    for pt in projected_points:
+        if not np.isfinite(pt).all():
+            continue
+        if (
+            pt[0] < -margin
+            or pt[0] >= width + margin
+            or pt[1] < -margin
+            or pt[1] >= height + margin
+        ):
+            continue
+
+        cv2.circle(
+            img,
+            tuple(np.round(pt).astype(np.int32)),
+            2,
+            (255, 255, 255),
+            -1,
+            lineType=cv2.LINE_AA,
+        )
+
+
 def create_billboard(camera, img_folder, distance=200, draw_fn=None):
     """Create a billboard from a sequence of images."""
     img_paths = sorted(img_folder.glob("*.jpg"))
@@ -91,7 +135,7 @@ class Skel15:
     )
 
 
-def make_draw_func(camera, boxes):
+def make_draw_func(camera, boxes, pitch_points):
     # generate a set of colors for the boxes
     num_players = boxes.shape[1]
     colors = np.random.rand(num_players, 3)
@@ -99,6 +143,7 @@ def make_draw_func(camera, boxes):
 
     def _draw_func(img, current_frame_id):
         current_frame_id = min(current_frame_id, len(camera["K"]) - 1)
+        draw_pitch_points(img, camera, pitch_points, current_frame_id)
         for i in range(num_players):
             box = boxes[current_frame_id, i]
             if np.isnan(box).any():
@@ -212,6 +257,7 @@ if __name__ == "__main__":
 
     camera_params = dict(np.load(calibrated_camera_path))
     boxes = np.load(data_dir / "boxes" / f"{clip_name}.npy")
+    pitch_points = np.loadtxt(data_dir / "pitch_points.txt")
 
     # Load 3D predictions
     if not args.predictions.exists():
@@ -238,7 +284,12 @@ if __name__ == "__main__":
     camera = OpenCVCamera(
         camera_params["K"], camera_params["Rt"], W, H, viewer=viewer, name="Overlay"
     )
-    billboard = create_billboard(camera, img_folder, 200, make_draw_func(camera_params, boxes))
+    billboard = create_billboard(
+        camera,
+        img_folder,
+        200,
+        make_draw_func(camera_params, boxes, pitch_points),
+    )
     viewer.scene.add(billboard)
     viewer.scene.add(camera)
 
