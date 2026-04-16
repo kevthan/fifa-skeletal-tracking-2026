@@ -64,6 +64,8 @@ def compute_reprojection_error(predictions, skels_2d, cameras, Rt, boxes, sequen
     valid = ~np.isnan(boxes).any(axis=-1).transpose(1, 0)  # (NUM_PERSONS, NUM_FRAMES)
 
     reprojection_errors = []
+    per_player_errors = [[] for _ in range(NUM_PERSONS)]
+    per_player_centers = [[] for _ in range(NUM_PERSONS)]
 
     for frame_idx in range(NUM_FRAMES):
         for person in range(NUM_PERSONS):
@@ -90,8 +92,30 @@ def compute_reprojection_error(predictions, skels_2d, cameras, Rt, boxes, sequen
             # Compute L2 distance in pixels
             errors = np.linalg.norm(pts_2d - skel_2d_gt, axis=1)  # (15,)
             reprojection_errors.extend(errors)
+            per_player_errors[person].extend(errors.tolist())
+
+            box = boxes[frame_idx, person]
+            box_center = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
+            per_player_centers[person].append(box_center)
 
     reprojection_errors = np.array(reprojection_errors)
+    per_player_stats = []
+    for person in range(NUM_PERSONS):
+        if not per_player_errors[person]:
+            continue
+        mean_center = np.mean(per_player_centers[person], axis=0)
+        per_player_stats.append(
+            {
+                "player_id": person,
+                "mean_reprojection_error": float(np.mean(per_player_errors[person])),
+                "median_reprojection_error": float(np.median(per_player_errors[person])),
+                "mean_x": float(mean_center[0]),
+                "mean_y": float(mean_center[1]),
+                "num_observations": len(per_player_errors[person]),
+            }
+        )
+
+    per_player_stats.sort(key=lambda stats: stats["mean_reprojection_error"])
 
     return {
         "mean_reprojection_error": float(np.mean(reprojection_errors)),
@@ -99,6 +123,7 @@ def compute_reprojection_error(predictions, skels_2d, cameras, Rt, boxes, sequen
         "std_reprojection_error": float(np.std(reprojection_errors)),
         "max_reprojection_error": float(np.max(reprojection_errors)),
         "num_observations": len(reprojection_errors),
+        "per_player_stats": per_player_stats,
     }
 
 
@@ -754,6 +779,15 @@ def main(
             f"median={reproj_stats['median_reprojection_error']:.2f}px, "
             f"std={reproj_stats['std_reprojection_error']:.2f}px"
         )
+        for player_stats in reproj_stats["per_player_stats"]:
+            print(
+                f"    Player {player_stats['player_id']:02d}: "
+                f"mean_err={player_stats['mean_reprojection_error']:.2f}px, "
+                f"median_err={player_stats['median_reprojection_error']:.2f}px, "
+                f"x={player_stats['mean_x']:.2f}px, "
+                f"y={player_stats['mean_y']:.2f}px, "
+                f"n={player_stats['num_observations']}"
+            )
 
     if not output.parent.exists():
         output.parent.mkdir(parents=True, exist_ok=True)

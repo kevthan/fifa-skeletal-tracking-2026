@@ -13,10 +13,13 @@ OUTPUT_DIR="/Users/kevin/Projects/fifa-challenge-2026/experiments/${SUBMISSION_N
 PRED_PATH="${OUTPUT_DIR}/${SUBMISSION_NAME}_${SPLIT}.npz"
 
 # create predictions in .npz format
-python main.py -s data/sequences_${SPLIT}.txt -o ${PRED_PATH} -c
+python main.py \
+    -s "data/sequences_${SPLIT}.txt" \
+    -o "${PRED_PATH}" \
+    -c
 
 # prepare the submission zip file
 python prepare_submission.py \
---predictions-path ${PRED_PATH} \
---output-dir ${OUTPUT_DIR} \
---split $SPLIT
+    --predictions-path "${PRED_PATH}" \
+    --output-dir "${OUTPUT_DIR}" \
+    --split "$SPLIT"
