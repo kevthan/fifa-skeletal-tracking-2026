@@ -252,6 +252,7 @@ def extract_lane_lines_mask(image):
 class CameraTrackerOptions:
     refine_interval: int = 10
     debug_stages: tuple[str, ...] = ("projection",)
+    yaw_refine_window_deg: float = 2.0
 
 
 class CameraTracker:
@@ -287,6 +288,7 @@ class CameraTracker:
         self.camera_states = []
         self.pitch_points = pitch_points
         self.refine_interval = options.refine_interval
+        self.yaw_refine_window_deg = options.yaw_refine_window_deg
         self.debug_vis = Debugger(debug_stages=options.debug_stages)
 
     def initialize(
@@ -483,6 +485,15 @@ class CameraTracker:
             dist_coeffs=state_curr.k,
         )
 
+        R = self._refine_yaw_with_mask(
+            dist_map=dist_map,
+            pts_3d=self.pitch_points,
+            K=state_curr.K,
+            R_init=R,
+            C=state_curr.C,
+            dist_coeffs=state_curr.k,
+        )
+
         # Update state with refined rotation
         self.state.R = R
 
@@ -548,6 +559,33 @@ class CameraTracker:
         """
         U, _, Vt = np.linalg.svd(A)
         return U @ np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+
+    @staticmethod
+    def euler_to_rotation_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
+        """Construct rotation matrix from yaw/pitch/roll in the tracker convention."""
+        forward = np.array(
+            [
+                np.sin(yaw) * np.cos(pitch),
+                np.cos(yaw) * np.cos(pitch),
+                np.sin(pitch),
+            ],
+            dtype=np.float64,
+        )
+        forward = forward / np.linalg.norm(forward)
+
+        world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        right_base = np.cross(forward, world_up)
+        right_norm = np.linalg.norm(right_base)
+        if right_norm < 1e-8:
+            right_base = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        else:
+            right_base = right_base / right_norm
+        up_base = np.cross(forward, right_base)
+        up_base = up_base / np.linalg.norm(up_base)
+
+        right = np.cos(roll) * right_base - np.sin(roll) * up_base
+        up = np.sin(roll) * right_base + np.cos(roll) * up_base
+        return np.stack([right, up, forward], axis=0)
 
     # ========================================================================
     # Private methods - integration with existing algorithms
@@ -632,6 +670,53 @@ class CameraTracker:
         R_refined = (result.x + r_init).reshape(3, 3)
         R_refined = self.find_closest_orthogonal_matrix(R_refined)
         return R_refined
+
+    def _refine_yaw_with_mask(
+        self,
+        dist_map: np.ndarray,
+        pts_3d: np.ndarray,
+        K: np.ndarray,
+        R_init: np.ndarray,
+        C: np.ndarray,
+        dist_coeffs: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Refine only yaw using the distance-map objective.
+
+        Pitch, roll, and camera center are kept fixed.
+        """
+        if dist_coeffs is None:
+            dist_coeffs = np.zeros(5, dtype=np.float32)
+
+        H, W = dist_map.shape[:2]
+        yaw_init, pitch, roll = self.rotation_matrix_to_euler(R_init)
+        yaw_window = np.deg2rad(self.yaw_refine_window_deg)
+
+        def objective_function(yaw_delta: float) -> float:
+            R = self.euler_to_rotation_matrix(yaw_init + yaw_delta, pitch, roll)
+            t = -R @ C
+
+            pts_2d, _ = cv2.projectPoints(pts_3d, cv2.Rodrigues(R)[0], t, K, dist_coeffs)
+            pts_2d = pts_2d.squeeze(axis=1)
+            pts_2d = pts_2d.clip([-500, -500], [W + 500, H + 500])
+
+            xs = np.round(pts_2d[:, 0]).astype(np.int32)
+            ys = np.round(pts_2d[:, 1]).astype(np.int32)
+
+            valid_mask = (xs >= 0) & (xs < W) & (ys >= 0) & (ys < H)
+            if not np.any(valid_mask):
+                return float(np.sqrt(H**2 + W**2))
+
+            return float(dist_map[ys[valid_mask], xs[valid_mask]].mean())
+
+        result = scipy.optimize.minimize_scalar(
+            objective_function,
+            bounds=(-yaw_window, yaw_window),
+            method="bounded",
+            options={"xatol": np.deg2rad(0.02)},
+        )
+
+        refined_yaw = yaw_init + float(result.x)
+        return self.euler_to_rotation_matrix(refined_yaw, pitch, roll)
 
     @staticmethod
     def _make_dist_map(mask: np.ndarray) -> np.ndarray:
