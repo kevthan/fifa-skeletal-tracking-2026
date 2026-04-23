@@ -135,11 +135,10 @@ class Skel15:
     )
 
 
-def make_draw_func(camera, boxes, pitch_points):
-    # generate a set of colors for the boxes
+def make_draw_func(camera, boxes, pitch_points, predictions=None):
+    # Generate a stable color per player so boxes and skeletons match.
     num_players = boxes.shape[1]
-    colors = np.random.rand(num_players, 3)
-    colors = (colors * 255).astype(np.uint8)
+    colors = (generate_player_colors(num_players) * 255).astype(np.uint8)
 
     def _draw_func(img, current_frame_id):
         current_frame_id = min(current_frame_id, len(camera["K"]) - 1)
@@ -162,6 +161,37 @@ def make_draw_func(camera, boxes, pitch_points):
                 colors[i].tolist(),
                 2,
             )
+
+        if predictions is not None and current_frame_id < predictions.shape[1]:
+            H, W = img.shape[:2]
+            for i in range(min(num_players, predictions.shape[0])):
+                skel_3d = predictions[i, current_frame_id]
+                if np.isnan(skel_3d).any():
+                    continue
+
+                skel_2d = project_points(skel_3d, camera, current_frame_id)
+                if not np.isfinite(skel_2d).all():
+                    continue
+
+                color = tuple(int(c) for c in colors[i].tolist())
+
+                # Draw bones first for a cleaner overlay.
+                for idx1, idx2 in Skel15.bones:
+                    pt1 = skel_2d[idx1]
+                    pt2 = skel_2d[idx2]
+                    if not (np.isfinite(pt1).all() and np.isfinite(pt2).all()):
+                        continue
+                    x1, y1 = np.round(pt1).astype(np.int32)
+                    x2, y2 = np.round(pt2).astype(np.int32)
+                    if not (0 <= x1 < W and 0 <= y1 < H and 0 <= x2 < W and 0 <= y2 < H):
+                        continue
+                    cv2.line(img, (x1, y1), (x2, y2), color, 1, lineType=cv2.LINE_AA)
+
+                # Draw keypoints on top.
+                for pt in skel_2d:
+                    x, y = np.round(pt).astype(np.int32)
+                    if 0 <= x < W and 0 <= y < H:
+                        cv2.circle(img, (x, y), 2, color, -1, lineType=cv2.LINE_AA)
         return img
 
     return _draw_func
@@ -230,6 +260,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--output_path", type=Path, default=Path("outputs/result_vis"))
+    parser.add_argument(
+        "--show_3d_skeletons",
+        action="store_true",
+        help="Render 3D skeletons in the scene (can look misaligned on distorted footage).",
+    )
     args = parser.parse_args()
 
     # define constants
@@ -288,14 +323,15 @@ if __name__ == "__main__":
         camera,
         img_folder,
         200,
-        make_draw_func(camera_params, boxes, pitch_points),
+        make_draw_func(camera_params, boxes, pitch_points, predictions),
     )
     viewer.scene.add(billboard)
     viewer.scene.add(camera)
 
-    # Add 3D skeleton predictions
-    num_frames = boxes.shape[0]
-    add_skeleton_renderables(viewer, predictions, num_frames)
+    # Optional: render 3D skeletons in the scene (independent of 2D distortion overlay).
+    if args.show_3d_skeletons:
+        num_frames = boxes.shape[0]
+        add_skeleton_renderables(viewer, predictions, num_frames)
 
     # Configure lighting
     light = viewer.scene.lights[0]
